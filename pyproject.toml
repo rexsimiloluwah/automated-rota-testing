@@ -1,0 +1,32 @@
+[project]
+name = "automated-rota-testing"
+version = "0.1.0"
+description = "Automated testing infrastructure for google-deepmind/ai-foundations notebooks"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+    "pytest>=8.0",
+]
+
+[project.optional-dependencies]
+# Dependencies shared by both CPU and GPU test environments.
+# These mirror what ai_foundations needs (installed via --no-deps).
+cpu = [
+    "jax",
+    "keras",
+    "gemma",
+    "numpy",
+    "pandas",
+    "plotly",
+    "ipython",
+    "scipy",
+    "scikit-learn",
+    "papermill",
+    "ipykernel",
+]
+
+# Additional dependencies only available/needed on GPU instances.
+gpu = [
+    "automated-rota-testing[cpu]",
+    "keras-nlp",
+]

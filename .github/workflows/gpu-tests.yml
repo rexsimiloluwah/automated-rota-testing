@@ -1,0 +1,165 @@
+name: GPU Notebook Tests
+
+on:
+  schedule:
+    # Weekly on Sundays at 05:00 UTC (after the smoke test).
+    - cron: "0 5 * * 0"
+  workflow_dispatch:
+
+# Required for Workload Identity Federation.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCE_ZONE: us-central1-a
+  GCE_MACHINE_TYPE: n1-standard-4
+  GCE_ACCELERATOR: type=nvidia-tesla-t4,count=1
+  GCE_IMAGE_FAMILY: pytorch-2-7-cu128-ubuntu-2204-nvidia-570
+  GCE_IMAGE_PROJECT: deeplearning-platform-release
+  GCE_BOOT_DISK_SIZE: 100GB
+  GCE_NETWORK: similoluwa-vpc
+  GCE_SUBNET: similoluwa-vpc
+
+jobs:
+  gpu-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      # Authenticate to GCP via Workload Identity Federation (keyless).
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      # Generate a unique instance name for this run.
+      - name: Set instance name
+        run: echo "INSTANCE_NAME=nb-gpu-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+
+      # Step 1: Create the GCE GPU instance.
+      - name: Create GCE instance
+        run: |
+          gcloud compute instances create "$INSTANCE_NAME" \
+            --zone="$GCE_ZONE" \
+            --machine-type="$GCE_MACHINE_TYPE" \
+            --accelerator="$GCE_ACCELERATOR" \
+            --maintenance-policy=TERMINATE \
+            --image-family="$GCE_IMAGE_FAMILY" \
+            --image-project="$GCE_IMAGE_PROJECT" \
+            --boot-disk-size="$GCE_BOOT_DISK_SIZE" \
+            --boot-disk-type=pd-ssd \
+            --network="$GCE_NETWORK" \
+            --subnet="$GCE_SUBNET" \
+            --metadata-from-file=startup-script=scripts/gce_startup.sh \
+            --metadata=install-nvidia-driver=True \
+            --scopes=cloud-platform \
+            --tags=allow-ssh \
+            --quiet
+
+      # Step 2: Wait for SSH.
+      - name: Wait for SSH
+        run: |
+          for i in $(seq 1 12); do
+            if gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+              --ssh-flag="-o StrictHostKeyChecking=no" \
+              --ssh-flag="-o ConnectTimeout=10" \
+              --command="echo SSH_OK" 2>/dev/null | grep -q "SSH_OK"; then
+              echo "SSH available."
+              exit 0
+            fi
+            echo "Waiting for SSH... ($((i * 10))s)"
+            sleep 10
+          done
+          echo "Error: SSH not available after 120s."
+          exit 1
+
+      # Step 3: Wait for startup script.
+      - name: Wait for startup script
+        run: |
+          for i in $(seq 1 45); do
+            if gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+              --ssh-flag="-o StrictHostKeyChecking=no" \
+              --ssh-flag="-o ConnectTimeout=10" \
+              --command="test -f /workspace/.ready && echo READY" \
+              2>/dev/null | grep -q "READY"; then
+              echo "Instance is ready."
+              exit 0
+            fi
+            echo "Waiting for startup... ($((i * 20))s)"
+            sleep 20
+          done
+          echo "Error: startup did not complete within 900s."
+          exit 1
+
+      # Step 4: Copy project files.
+      - name: Copy project files to instance
+        run: |
+          gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
+            --strict-host-key-checking=no \
+            scripts tests pyproject.toml notebook_overrides.yml \
+            "$INSTANCE_NAME":/workspace/
+
+      # Step 5: Install dependencies.
+      - name: Install dependencies on instance
+        run: |
+          gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+            --ssh-flag="-o StrictHostKeyChecking=no" \
+            --command="bash /workspace/scripts/gce_install_deps.sh"
+
+      # Step 6: Run notebook checks (all notebooks including GPU).
+      - name: Run notebook syntax and import checks
+        run: |
+          gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+            --ssh-flag="-o StrictHostKeyChecking=no" \
+            --command="cd /workspace && source venv/bin/activate && \
+              python scripts/generate_manifest.py \
+                --repo-dir ai-foundations \
+                --overrides notebook_overrides.yml && \
+              python scripts/check_notebook.py --all --repo-dir ai-foundations"
+
+      # Step 7: Run pytest.
+      - name: Run pytest
+        run: |
+          gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+            --ssh-flag="-o StrictHostKeyChecking=no" \
+            --command="cd /workspace && source venv/bin/activate && \
+              pytest tests/ -v --import-mode=importlib --tb=short"
+
+      # Step 8: Copy results back.
+      - name: Copy results
+        if: always()
+        run: |
+          mkdir -p results/gpu
+          gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
+            --strict-host-key-checking=no \
+            "$INSTANCE_NAME":/workspace/notebook_manifest.yml \
+            results/gpu/ 2>/dev/null || true
+          gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
+            --strict-host-key-checking=no \
+            "$INSTANCE_NAME":/workspace/startup.log \
+            results/gpu/ 2>/dev/null || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-test-results
+          path: results/gpu/
+
+      # Always delete the instance, even if tests fail.
+      - name: Delete GCE instance
+        if: always()
+        run: |
+          gcloud compute instances delete "$INSTANCE_NAME" \
+            --zone="$GCE_ZONE" \
+            --quiet \
+            2>/dev/null || echo "Warning: could not delete instance."

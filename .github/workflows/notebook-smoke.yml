@@ -1,0 +1,38 @@
+name: Notebook Smoke Tests
+
+on:
+  schedule:
+    # Weekly on Sundays at 04:00 UTC.
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Clone upstream repo
+        run: bash scripts/sync_upstream.sh
+
+      - name: Install dependencies
+        run: |
+          pip install ".[cpu]"
+          pip install --no-deps -e ai-foundations
+
+      - name: Run tests
+        run: pytest tests/ -v --import-mode=importlib --tb=short
+
+      - name: Generate manifest
+        run: python scripts/generate_manifest.py
+
+      - name: Check notebook syntax and imports (CPU only)
+        run: python scripts/check_notebook.py --all --skip-gpu

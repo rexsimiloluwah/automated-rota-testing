@@ -1,0 +1,39 @@
+name: Notebook Import & Syntax Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly at 03:00 UTC.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  check-notebooks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Clone upstream repo
+        run: bash scripts/sync_upstream.sh
+
+      - name: Install dependencies
+        run: |
+          pip install ".[cpu]"
+          pip install --no-deps -e ai-foundations
+
+      - name: Generate manifest
+        run: python scripts/generate_manifest.py
+
+      - name: Check notebook syntax and imports (CPU only)
+        run: python scripts/check_notebook.py --all --skip-gpu

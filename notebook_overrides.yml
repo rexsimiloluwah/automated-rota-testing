@@ -1,0 +1,31 @@
+# Manual overrides for notebook testing.
+#
+# Use this file to force-skip notebooks, adjust timeouts, or override
+# the auto-detected GPU classification. Entries here are merged on top
+# of the auto-generated manifest.
+#
+# Supported fields per entry:
+#   path:    (required) notebook path relative to upstream repo root
+#   skip:    (optional) true to skip this notebook entirely
+#   reason:  (optional) explanation for the override
+#   timeout: (optional) execution timeout in seconds (overrides default)
+#   gpu:     (optional) true/false to override auto-detected GPU classification
+
+overrides:
+  # These notebooks require Kaggle credentials to download Gemma weights.
+  - path: course_5/gdm_lab_5_4_full_parameter_fine_tuning_of_gemma.ipynb
+    skip: true
+    reason: "Requires Kaggle credentials for Gemma model download"
+
+  - path: course_5/gdm_lab_5_6_fine_tune_gemma_with_lora.ipynb
+    skip: true
+    reason: "Requires Kaggle credentials for Gemma model download"
+
+  - path: course_7/gdm_lab_7_5_fine_tune_a_model_with_bfloat16.ipynb
+    skip: true
+    reason: "Requires Kaggle credentials for Gemma model download"
+
+  # This notebook explicitly states it can run on CPU.
+  - path: course_5/gdm_lab_5_5_implement_lora_for_parameter_efficient_fine_tuning.ipynb
+    gpu: false
+    reason: "Notebook states LoRA implementation can be done on CPU"

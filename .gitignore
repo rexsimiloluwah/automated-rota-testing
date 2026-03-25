@@ -1,0 +1,42 @@
+# Upstream repo (cloned at runtime)
+ai-foundations/
+
+# Generated manifest
+notebook_manifest.yml
+
+# Executed notebook outputs
+results/
+
+claude-info/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# GCP credentials (never commit these)
+*-sa-key.json
+*.json.bak
+
+# Logs
+*.log

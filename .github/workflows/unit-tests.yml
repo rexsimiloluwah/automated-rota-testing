@@ -1,0 +1,36 @@
+name: Unit Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly at 02:00 UTC.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Clone upstream repo
+        run: bash scripts/sync_upstream.sh
+
+      - name: Install dependencies
+        run: |
+          pip install ".[cpu]"
+          pip install --no-deps -e ai-foundations
+
+      - name: Run tests
+        run: pytest tests/ -v --import-mode=importlib --tb=short
