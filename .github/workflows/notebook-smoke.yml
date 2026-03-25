@@ -35,4 +35,4 @@ jobs:
         run: python scripts/generate_manifest.py
 
       - name: Check notebook syntax and imports (CPU only)
-        run: python scripts/check_notebook.py --all --skip-gpu
+        run: python scripts/check_notebook.py --all --skip-gpu --summary "$GITHUB_STEP_SUMMARY"

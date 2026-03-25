@@ -124,7 +124,13 @@ jobs:
               python scripts/generate_manifest.py \
                 --repo-dir ai-foundations \
                 --overrides notebook_overrides.yml && \
-              python scripts/check_notebook.py --all --repo-dir ai-foundations"
+              python scripts/check_notebook.py --all --repo-dir ai-foundations \
+                --summary /workspace/check_summary.md"
+          gcloud compute scp --zone="$GCE_ZONE" --quiet \
+            --strict-host-key-checking=no \
+            "$INSTANCE_NAME":/workspace/check_summary.md \
+            /tmp/check_summary.md 2>/dev/null || true
+          cat /tmp/check_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
       # Step 7: Run pytest.
       - name: Run pytest

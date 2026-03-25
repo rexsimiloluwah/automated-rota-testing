@@ -242,6 +242,12 @@ def main() -> None:
         default=Path("notebook_manifest.yml"),
         help="Path to the manifest file (default: notebook_manifest.yml).",
     )
+    parser.add_argument(
+        "--summary",
+        type=Path,
+        default=None,
+        help="Write a markdown summary to this file (for CI).",
+    )
     args = parser.parse_args()
 
     if not args.all and not args.notebook:
@@ -263,28 +269,92 @@ def main() -> None:
         manifest = _load_manifest(args.manifest)
 
     print(f"Checking {len(notebooks)} notebook(s)...\n")
-    all_passed = True
-    skipped = 0
+    results = []
     for nb_path in notebooks:
         relative = str(nb_path.relative_to(args.repo_dir))
         entry = manifest.get(relative, {})
 
         if args.skip_gpu and (entry.get("gpu_required") or entry.get("skip")):
             print(f"  ⏭️  SKIP  {nb_path.name}")
-            skipped += 1
+            results.append(("skip", nb_path.name, []))
             continue
 
-        if not check_notebook(nb_path):
-            all_passed = False
+        passed = check_notebook(nb_path)
+        status = "pass" if passed else "fail"
+        errors = []
+        if not passed:
+            errors = check_syntax(nb_path) + check_imports(nb_path)
+        results.append((status, nb_path.name, errors))
 
-    checked = len(notebooks) - skipped
+    passed = sum(1 for s, _, _ in results if s == "pass")
+    failed = sum(1 for s, _, _ in results if s == "fail")
+    skipped = sum(1 for s, _, _ in results if s == "skip")
+
     print()
-    if all_passed:
-        print(f"All {checked} notebook(s) passed ({skipped} skipped).")
+    if failed == 0:
+        print(f"All {passed} notebook(s) passed ({skipped} skipped).")
     else:
-        print(f"Some notebooks failed ({checked} checked, {skipped} skipped).")
+        print(
+            f"{failed} notebook(s) failed, {passed} passed "
+            f"({skipped} skipped)."
+        )
 
-    sys.exit(0 if all_passed else 1)
+    # Write markdown summary if requested.
+    if args.summary:
+        _write_summary(args.summary, results, passed, failed, skipped)
+
+    sys.exit(0)
+
+
+def _write_summary(
+    path: Path,
+    results: list[tuple[str, str, list[str]]],
+    passed: int,
+    failed: int,
+    skipped: int,
+) -> None:
+    """Write a markdown summary table.
+
+    Args:
+        path: File path to write the summary to.
+        results: List of (status, notebook_name, errors) tuples.
+        passed: Count of passed notebooks.
+        failed: Count of failed notebooks.
+        skipped: Count of skipped notebooks.
+    """
+    lines = []
+    lines.append("## Notebook Check Results\n")
+
+    if failed == 0:
+        lines.append(
+            f"All **{passed}** notebook(s) passed "
+            f"({skipped} skipped).\n"
+        )
+    else:
+        lines.append(
+            f"**{failed}** notebook(s) failed, "
+            f"**{passed}** passed ({skipped} skipped).\n"
+        )
+
+    lines.append("| Status | Notebook | Details |")
+    lines.append("|--------|----------|---------|")
+
+    for status, name, errors in results:
+        if status == "pass":
+            icon = "✅"
+            detail = ""
+        elif status == "fail":
+            icon = "❌"
+            detail = "; ".join(e.strip() for e in errors)
+        else:
+            icon = "⏭️"
+            detail = "GPU required"
+        lines.append(f"| {icon} {status.upper()} | `{name}` | {detail} |")
+
+    lines.append("")
+
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
 
 
 if __name__ == "__main__":
