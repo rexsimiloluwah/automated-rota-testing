@@ -1,38 +1,26 @@
-name: GPU Notebook Tests
+name: GPU Notebook Tests (standalone)
 
 on:
-  schedule:
-    # Weekly on Sundays at 05:00 UTC (after the smoke test).
-    - cron: "0 5 * * 0"
   workflow_dispatch:
 
-# Required for Workload Identity Federation.
 permissions:
   contents: read
   id-token: write
 
 env:
   GCE_ZONE: us-central1-a
-  GCE_MACHINE_TYPE: n1-standard-4
-  GCE_ACCELERATOR: type=nvidia-tesla-t4,count=1
-  GCE_IMAGE_FAMILY: pytorch-2-7-cu128-ubuntu-2204-nvidia-570
-  GCE_IMAGE_PROJECT: deeplearning-platform-release
-  GCE_BOOT_DISK_SIZE: 100GB
-  GCE_NETWORK: similoluwa-vpc
-  GCE_SUBNET: similoluwa-vpc
   COLAB_IMAGE: us-docker.pkg.dev/colab-images/public/runtime
 
 jobs:
-  gpu-test:
+  gpu-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      - name: Checkout this repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
-        id: auth
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -48,15 +36,15 @@ jobs:
         run: |
           gcloud compute instances create "$INSTANCE_NAME" \
             --zone="$GCE_ZONE" \
-            --machine-type="$GCE_MACHINE_TYPE" \
-            --accelerator="$GCE_ACCELERATOR" \
+            --machine-type=n1-standard-4 \
+            --accelerator=type=nvidia-tesla-t4,count=1 \
             --maintenance-policy=TERMINATE \
-            --image-family="$GCE_IMAGE_FAMILY" \
-            --image-project="$GCE_IMAGE_PROJECT" \
-            --boot-disk-size="$GCE_BOOT_DISK_SIZE" \
+            --image-family=pytorch-2-7-cu128-ubuntu-2204-nvidia-570 \
+            --image-project=deeplearning-platform-release \
+            --boot-disk-size=100GB \
             --boot-disk-type=pd-ssd \
-            --network="$GCE_NETWORK" \
-            --subnet="$GCE_SUBNET" \
+            --network=similoluwa-vpc \
+            --subnet=similoluwa-vpc \
             --metadata-from-file=startup-script=scripts/gce_startup.sh \
             --metadata=install-nvidia-driver=True \
             --scopes=cloud-platform \
@@ -70,14 +58,11 @@ jobs:
               --ssh-flag="-o StrictHostKeyChecking=no" \
               --ssh-flag="-o ConnectTimeout=10" \
               --command="echo SSH_OK" 2>/dev/null | grep -q "SSH_OK"; then
-              echo "SSH available."
-              exit 0
+              echo "SSH available."; exit 0
             fi
-            echo "Waiting for SSH... ($((i * 10))s)"
-            sleep 10
+            echo "Waiting for SSH... ($((i * 10))s)"; sleep 10
           done
-          echo "Error: SSH not available after 120s."
-          exit 1
+          echo "Error: SSH not available after 120s."; exit 1
 
       - name: Wait for startup script
         run: |
@@ -87,16 +72,13 @@ jobs:
               --ssh-flag="-o ConnectTimeout=10" \
               --command="test -f /workspace/.ready && echo READY" \
               2>/dev/null | grep -q "READY"; then
-              echo "Instance is ready."
-              exit 0
+              echo "Instance is ready."; exit 0
             fi
-            echo "Waiting for startup... ($((i * 20))s)"
-            sleep 20
+            echo "Waiting for startup... ($((i * 20))s)"; sleep 20
           done
-          echo "Error: startup did not complete within 900s."
-          exit 1
+          echo "Error: startup did not complete within 900s."; exit 1
 
-      - name: Copy project files to instance
+      - name: Copy project files
         run: |
           gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
             --strict-host-key-checking=no \
@@ -114,56 +96,34 @@ jobs:
               bash -c 'bash /workspace/scripts/gce_install_deps.sh && \
                 cd /workspace && \
                 pytest tests/ -v --import-mode=importlib --tb=short \
-                  2>&1 | tee /workspace/pytest_output.txt; \
+                  2>&1 | tee /workspace/gpu_pytest_output.txt; \
                 python scripts/generate_manifest.py \
                   --repo-dir ai-foundations \
                   --overrides notebook_overrides.yml; \
                 python scripts/check_notebook.py --all --repo-dir ai-foundations \
-                  --summary /workspace/notebook_summary.md'"
+                  --summary /workspace/gpu_notebook_summary.md'"
 
       - name: Write job summary
         if: always()
         run: |
           gcloud compute scp --zone="$GCE_ZONE" --quiet \
             --strict-host-key-checking=no \
-            "$INSTANCE_NAME":/workspace/pytest_output.txt \
-            /tmp/pytest_output.txt 2>/dev/null || true
+            "$INSTANCE_NAME":/workspace/gpu_pytest_output.txt \
+            /tmp/gpu_pytest_output.txt 2>/dev/null || true
           gcloud compute scp --zone="$GCE_ZONE" --quiet \
             --strict-host-key-checking=no \
-            "$INSTANCE_NAME":/workspace/notebook_summary.md \
-            /tmp/notebook_summary.md 2>/dev/null || true
-          echo "## Unit Test Results" >> "$GITHUB_STEP_SUMMARY"
+            "$INSTANCE_NAME":/workspace/gpu_notebook_summary.md \
+            /tmp/gpu_notebook_summary.md 2>/dev/null || true
+          echo "## GPU Unit Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          cat /tmp/pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No pytest output." >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/gpu_pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No output." >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          cat /tmp/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-
-      - name: Copy results
-        if: always()
-        run: |
-          mkdir -p results/gpu
-          gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
-            --strict-host-key-checking=no \
-            "$INSTANCE_NAME":/workspace/notebook_manifest.yml \
-            results/gpu/ 2>/dev/null || true
-          gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
-            --strict-host-key-checking=no \
-            "$INSTANCE_NAME":/workspace/startup.log \
-            results/gpu/ 2>/dev/null || true
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gpu-test-results
-          path: results/gpu/
+          cat /tmp/gpu_notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
       - name: Delete GCE instance
         if: always()
         run: |
           gcloud compute instances delete "$INSTANCE_NAME" \
-            --zone="$GCE_ZONE" \
-            --quiet \
-            2>/dev/null || echo "Warning: could not delete instance."
+            --zone="$GCE_ZONE" --quiet 2>/dev/null || true

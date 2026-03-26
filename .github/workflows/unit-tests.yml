@@ -1,13 +1,6 @@
-name: Unit Tests
+name: Unit Tests (standalone)
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  schedule:
-    # Nightly at 02:00 UTC.
-    - cron: "0 2 * * *"
   workflow_dispatch:
 
 jobs:
@@ -16,21 +9,18 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout this repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Build Colab test image
         run: docker build -t nb-test .
 
-      - name: Run tests
+      - name: Run pytest
         run: |
           mkdir -p results
           docker run --rm -v "$PWD/results:/workspace/results" nb-test bash -c "
             pytest tests/ -v --import-mode=importlib --tb=short \
-              2>&1 | tee /workspace/results/pytest_output.txt;
-            python scripts/generate_manifest.py;
-            python scripts/check_notebook.py --all --skip-gpu \
-              --summary /workspace/results/notebook_summary.md
+              2>&1 | tee /workspace/results/pytest_output.txt
           "
 
       - name: Write job summary
@@ -39,7 +29,5 @@ jobs:
           echo "## Unit Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          cat results/pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No pytest output." >> "$GITHUB_STEP_SUMMARY"
+          cat results/pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No output." >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          cat results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
