@@ -1,0 +1,25 @@
+# Official Google Colab CPU runtime — same environment students use.
+FROM us-docker.pkg.dev/colab-images/public/cpu-runtime
+
+# Override the default Colab entrypoint (Jupyter server).
+ENTRYPOINT []
+
+WORKDIR /workspace
+
+# Clone upstream repo.
+RUN git clone --depth 1 --branch main \
+        https://github.com/google-deepmind/ai-foundations.git
+
+# Install ai_foundations WITH deps — same as the notebook !pip install cell.
+# This matches what students get when they run the first cell in any notebook.
+RUN pip install --no-cache-dir -e ai-foundations
+
+# Install testing tools (not in Colab by default).
+RUN pip install --no-cache-dir pytest pyyaml
+
+# Copy test infrastructure.
+COPY scripts/ scripts/
+COPY tests/ tests/
+COPY pyproject.toml notebook_overrides.yml ./
+
+CMD ["bash"]

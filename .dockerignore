@@ -1,0 +1,11 @@
+ai-foundations/
+.venv/
+.git/
+.claude/
+claude-info/
+results/
+notebook_manifest.yml
+__pycache__/
+*.pyc
+.DS_Store
+uv.lock

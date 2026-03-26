@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Spin up an ephemeral GCE GPU instance, run GPU notebook tests, tear down.
+# Spin up an ephemeral GCE GPU instance, run GPU notebook tests in the
+# official Colab Docker image, tear down.
 #
 # Usage:
 #   ./scripts/gce_gpu_test.sh [--check-only] [--keep]
@@ -28,6 +29,7 @@ BOOT_DISK_SIZE="100GB"
 BOOT_DISK_TYPE="pd-ssd"
 NETWORK="similoluwa-vpc"
 SUBNET="similoluwa-vpc"
+COLAB_IMAGE="us-docker.pkg.dev/colab-images/public/runtime"
 PROJECT="$(gcloud config get project 2>/dev/null)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -41,7 +43,7 @@ SSH_OPTS=(
     --ssh-flag="-o LogLevel=ERROR"
 )
 
-# SCP options — gcloud compute scp uses native flags, not --ssh-flag.
+# SCP options.
 SCP_OPTS=(
     --strict-host-key-checking=no
 )
@@ -100,18 +102,17 @@ if ! gcloud auth print-access-token > /dev/null 2>&1; then
 fi
 echo "    Auth: OK"
 
-# Check that an SSH firewall rule exists.
 if ! gcloud compute firewall-rules list \
     --filter="name~default-allow-ssh OR name~allow-ssh" \
     --format="value(name)" 2>/dev/null | grep -q "ssh"; then
     echo "    Warning: no SSH firewall rule found. SSH may fail."
-    echo "    Fix: gcloud compute firewall-rules create allow-ssh --allow=tcp:22 --direction=INGRESS"
 fi
 echo "    Firewall: OK"
 
 echo "    Zone: ${ZONE}"
 echo "    Network: ${NETWORK}"
 echo "    Machine: ${MACHINE_TYPE} + T4"
+echo "    Container: ${COLAB_IMAGE}"
 echo "    Instance: ${INSTANCE_NAME}"
 echo ""
 
@@ -137,7 +138,7 @@ gcloud compute instances create "${INSTANCE_NAME}" \
 INSTANCE_CREATED=true
 echo "    Instance created."
 
-# Step 2: Wait for SSH to become available
+# Step 2: Wait for SSH
 echo "==> Waiting for SSH..."
 
 SSH_MAX=120
@@ -160,9 +161,9 @@ if [ $SSH_ELAPSED -ge $SSH_MAX ]; then
     exit 1
 fi
 
-# Step 3: Wait for startup script to complete
+# Step 3: Wait for startup script (NVIDIA drivers + Docker pull)
 echo "==> Waiting for startup script to finish..."
-echo "    (NVIDIA drivers + pip installs, typically 5-10 minutes)"
+echo "    (NVIDIA drivers + Colab image pull, typically 5-10 minutes)"
 
 MAX_WAIT=900
 ELAPSED=0
@@ -180,7 +181,6 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
     sleep $INTERVAL
     ELAPSED=$((ELAPSED + INTERVAL))
 
-    # Show progress with context every 60s.
     if [ $((ELAPSED % 60)) -eq 0 ]; then
         LAST_LOG=$(gcloud compute ssh "${INSTANCE_NAME}" \
             --zone="${ZONE}" "${SSH_OPTS[@]}" --quiet \
@@ -211,44 +211,38 @@ gcloud compute scp --recurse --zone="${ZONE}" --quiet \
 
 echo "    Files copied."
 
-# Step 5: Install Python dependencies
-echo "==> Installing Python dependencies on instance..."
-if ! gcloud compute ssh "${INSTANCE_NAME}" --zone="${ZONE}" --quiet \
-    "${SSH_OPTS[@]}" \
-    --command="bash /workspace/scripts/gce_install_deps.sh"; then
-    echo "    Error: dependency installation failed."
-    exit 1
-fi
-
-# Step 6: Run tests
-echo "==> Running GPU notebook tests..."
+# Step 5: Install deps and run tests in a single Docker container
+echo "==> Running install + tests in Colab container..."
 echo ""
 
 TEST_EXIT_CODE=0
 
-# Generate manifest and run import/syntax checks on ALL notebooks.
-gcloud compute ssh "${INSTANCE_NAME}" --zone="${ZONE}" --quiet \
-    "${SSH_OPTS[@]}" \
-    --command="cd /workspace && source venv/bin/activate && \
+# Build the full command: install deps, then run tests.
+if [ "$CHECK_ONLY" = true ]; then
+    FULL_CMD="bash /workspace/scripts/gce_install_deps.sh && \
+        cd /workspace && \
         python scripts/generate_manifest.py \
             --repo-dir ai-foundations \
             --overrides notebook_overrides.yml && \
-        python scripts/check_notebook.py --all --repo-dir ai-foundations" \
-    || TEST_EXIT_CODE=$?
-
-if [ "$CHECK_ONLY" = true ]; then
-    echo ""
-    echo "==> Check-only mode. Skipping pytest."
+        python scripts/check_notebook.py --all --repo-dir ai-foundations"
 else
-    # Run pytest (feedback solution tests + utility tests).
-    echo ""
-    echo "==> Running pytest..."
-    gcloud compute ssh "${INSTANCE_NAME}" --zone="${ZONE}" --quiet \
-        "${SSH_OPTS[@]}" \
-        --command="cd /workspace && source venv/bin/activate && \
-            pytest tests/ -v --import-mode=importlib --tb=short" \
-        || TEST_EXIT_CODE=$?
+    FULL_CMD="bash /workspace/scripts/gce_install_deps.sh && \
+        cd /workspace && \
+        python scripts/generate_manifest.py \
+            --repo-dir ai-foundations \
+            --overrides notebook_overrides.yml && \
+        python scripts/check_notebook.py --all --repo-dir ai-foundations && \
+        pytest tests/ -v --import-mode=importlib --tb=short"
 fi
+
+gcloud compute ssh "${INSTANCE_NAME}" --zone="${ZONE}" --quiet \
+    "${SSH_OPTS[@]}" \
+    --command="sudo docker run --rm --gpus=all \
+        --entrypoint '' \
+        -v /workspace:/workspace \
+        ${COLAB_IMAGE} \
+        bash -c '${FULL_CMD}'" \
+    || TEST_EXIT_CODE=$?
 
 # Step 7: Copy results back
 echo ""

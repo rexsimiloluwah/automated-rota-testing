@@ -4,6 +4,10 @@ Automated testing infrastructure for the [google-deepmind/ai-foundations](https:
 
 This repo does **not** contain the notebooks themselves. It clones them fresh from upstream on every CI run to test the latest state.
 
+## Environment consistency
+
+All tests run inside the **official Google Colab Docker image** (`us-docker.pkg.dev/colab-images/public/cpu-runtime` for CPU, `us-docker.pkg.dev/colab-images/public/runtime` for GPU). This guarantees that test results match what students experience on Colab — same Python version, same package versions, same runtime behavior.
+
 ## Workflows
 
 | Workflow | Trigger | What it does |
@@ -12,6 +16,8 @@ This repo does **not** contain the notebooks themselves. It clones them fresh fr
 | `notebook-imports.yml` | push/PR, nightly 03:00 UTC, manual | Notebook syntax & import checks (CPU only) |
 | `notebook-smoke.yml` | weekly Sun 04:00 UTC, manual | pytest + notebook checks (CPU only) |
 | `gpu-tests.yml` | weekly Sun 05:00 UTC, manual | Spins up GCE T4 GPU instance, runs all checks |
+
+All workflows use the Colab Docker image as the execution environment.
 
 ## How it works
 
@@ -59,7 +65,25 @@ overrides:
 
 ## Local testing
 
-### Setup with uv
+### Using Docker (recommended)
+
+Docker provides the exact Colab environment. No Python version or package mismatch.
+
+```bash
+# Run all CPU tests (pytest + notebook checks)
+docker compose run test
+
+# Run only pytest
+docker compose run pytest
+
+# Run only notebook checks
+docker compose run check
+
+# Drop into a shell for debugging
+docker compose run shell
+```
+
+### Using uv (without Docker)
 
 ```bash
 # 1. Install uv (if not already installed)
@@ -75,27 +99,19 @@ source .venv/bin/activate
 bash scripts/sync_upstream.sh
 
 # 5. Install the ai_foundations package
-#    (--no-deps needed — upstream has conflicting numpy/jax pins)
 uv pip install --no-deps -e ai-foundations
-```
 
-### Run tests locally
-
-```bash
-# Run all tests (utility + feedback solution validation)
+# 6. Run tests
 uv run pytest tests/ -v --import-mode=importlib
-
-# Run notebook syntax and import checks
 uv run python scripts/generate_manifest.py
 uv run python scripts/check_notebook.py --all --skip-gpu
-
-# Check a single notebook
-uv run python scripts/check_notebook.py ai-foundations/course_1/gdm_lab_1_1_create_your_own_probability_distribution.ipynb
 ```
+
+Note: results may differ from Colab due to Python version and package differences.
 
 ### Run GPU tests locally
 
-Requires `gcloud` CLI authenticated with a project that has T4 GPU quota.
+Requires `gcloud` CLI authenticated with a project that has T4 GPU quota. Runs tests inside the Colab GPU Docker image on an ephemeral GCE instance.
 
 ```bash
 # Full run: create instance, run tests, delete instance
@@ -174,10 +190,10 @@ Once configured, the `gpu-tests.yml` workflow will authenticate automatically on
 
 ```
 .github/workflows/
-  unit-tests.yml              pytest (push/PR/nightly)
-  notebook-imports.yml        Notebook syntax & import checks (push/PR/nightly)
+  unit-tests.yml              pytest in Colab container (push/PR/nightly)
+  notebook-imports.yml        Notebook checks in Colab container (push/PR/nightly)
   notebook-smoke.yml          pytest + notebook checks (weekly)
-  gpu-tests.yml               GPU notebook tests via GCE (weekly)
+  gpu-tests.yml               GPU tests via GCE + Colab container (weekly)
 tests/
   test_utilities.py           Tests for ai_foundations utility functions
   test_feedback_solutions.py  Solution code validated through feedback functions
@@ -187,9 +203,12 @@ scripts/
   check_notebook.py           Validate notebook syntax and imports
   gce_gpu_test.sh             Local: ephemeral GCE GPU instance lifecycle
   gce_startup.sh              Startup script for GCE GPU instance
-  gce_install_deps.sh         Dependency install script for GCE instance
+  gce_install_deps.sh         Install deps inside Colab Docker container
   inject_solutions.py         Replace placeholders with solution code (future use)
   run_notebook.py             Execute notebook via papermill (future use)
+Dockerfile                    Colab CPU image for CI and local testing
+Dockerfile.gpu                Colab GPU image for GPU testing
+docker-compose.yml            Local Docker testing commands
 pyproject.toml                Project dependencies (cpu/gpu extras)
 uv.lock                      Locked dependency versions
 notebook_overrides.yml        Manual skip/timeout overrides
@@ -199,6 +218,6 @@ notebook_overrides.yml        Manual skip/timeout overrides
 
 | Category | Count | Notes |
 |----------|-------|-------|
-| CPU-only | 21 | Tested on `ubuntu-latest` in CI |
-| GPU-required | 15 | Tested on ephemeral GCE T4 instance |
+| CPU-only | 21 | Tested in Colab CPU container |
+| GPU-required | 15 | Tested in Colab GPU container on GCE T4 |
 | Total | 36 | Across courses 1-5 and 7 |

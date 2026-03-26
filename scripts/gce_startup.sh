@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # Startup script for GCE GPU test instance.
 #
-# This runs on the instance at boot time. It waits for NVIDIA drivers,
-# installs system packages, and clones the upstream repo.
-#
-# Python dependency installation happens AFTER gce_gpu_test.sh copies
-# the project files (including pyproject.toml) to the instance.
+# Waits for NVIDIA drivers, pulls the Colab GPU Docker image,
+# and marks the instance as ready.
 #
 # Logs: /workspace/startup.log
 
@@ -43,21 +40,26 @@ if [ $DRIVER_WAIT -ge $DRIVER_MAX ]; then
     exit 1
 fi
 
-# Install system packages
-echo "==> [startup] Installing system packages..."
-apt-get update -qq || true
-apt-get install -y -qq git python3-pip python3-venv 2>&1 || true
+# Ensure Docker and NVIDIA Container Toolkit are available
+echo "==> [startup] Checking Docker..."
+if ! command -v docker &> /dev/null; then
+    echo "==> [startup] Installing Docker..."
+    apt-get update -qq
+    apt-get install -y -qq docker.io nvidia-container-toolkit 2>&1
+    systemctl restart docker
+fi
 
-# Clone upstream repo
-cd /workspace
+# Verify nvidia-docker works
+echo "==> [startup] Verifying GPU access in Docker..."
+if ! sudo docker run --rm --gpus=all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi > /dev/null 2>&1; then
+    echo "==> [startup] WARNING: GPU not accessible from Docker. Restarting Docker..."
+    systemctl restart docker
+    sleep 5
+fi
 
-echo "==> [startup] Cloning upstream repo..."
-git clone --depth 1 --branch main \
-    https://github.com/google-deepmind/ai-foundations.git
-
-# Create virtualenv (deps installed later by gce_gpu_test.sh)
-echo "==> [startup] Creating virtualenv..."
-python3 -m venv /workspace/venv
+# Pull the Colab GPU image
+echo "==> [startup] Pulling Colab GPU image..."
+sudo docker pull us-docker.pkg.dev/colab-images/public/runtime
 
 # Set permissions and mark ready
 echo "==> [startup] Setting permissions..."

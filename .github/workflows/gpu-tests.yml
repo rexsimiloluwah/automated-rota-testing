@@ -20,17 +20,17 @@ env:
   GCE_BOOT_DISK_SIZE: 100GB
   GCE_NETWORK: similoluwa-vpc
   GCE_SUBNET: similoluwa-vpc
+  COLAB_IMAGE: us-docker.pkg.dev/colab-images/public/runtime
 
 jobs:
   gpu-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout this repo
         uses: actions/checkout@v4
 
-      # Authenticate to GCP via Workload Identity Federation (keyless).
       - name: Authenticate to Google Cloud
         id: auth
         uses: google-github-actions/auth@v2
@@ -41,11 +41,9 @@ jobs:
       - name: Set up gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
 
-      # Generate a unique instance name for this run.
       - name: Set instance name
         run: echo "INSTANCE_NAME=nb-gpu-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
 
-      # Step 1: Create the GCE GPU instance.
       - name: Create GCE instance
         run: |
           gcloud compute instances create "$INSTANCE_NAME" \
@@ -65,7 +63,6 @@ jobs:
             --tags=allow-ssh \
             --quiet
 
-      # Step 2: Wait for SSH.
       - name: Wait for SSH
         run: |
           for i in $(seq 1 12); do
@@ -82,7 +79,6 @@ jobs:
           echo "Error: SSH not available after 120s."
           exit 1
 
-      # Step 3: Wait for startup script.
       - name: Wait for startup script
         run: |
           for i in $(seq 1 45); do
@@ -100,7 +96,6 @@ jobs:
           echo "Error: startup did not complete within 900s."
           exit 1
 
-      # Step 4: Copy project files.
       - name: Copy project files to instance
         run: |
           gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
@@ -108,39 +103,43 @@ jobs:
             scripts tests pyproject.toml notebook_overrides.yml \
             "$INSTANCE_NAME":/workspace/
 
-      # Step 5: Install dependencies.
-      - name: Install dependencies on instance
+      - name: Install dependencies and run tests
         run: |
           gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
             --ssh-flag="-o StrictHostKeyChecking=no" \
-            --command="bash /workspace/scripts/gce_install_deps.sh"
+            --command="sudo docker run --rm --gpus=all \
+              --entrypoint '' \
+              -v /workspace:/workspace \
+              $COLAB_IMAGE \
+              bash -c 'bash /workspace/scripts/gce_install_deps.sh && \
+                cd /workspace && \
+                pytest tests/ -v --import-mode=importlib --tb=short \
+                  2>&1 | tee /workspace/pytest_output.txt; \
+                python scripts/generate_manifest.py \
+                  --repo-dir ai-foundations \
+                  --overrides notebook_overrides.yml; \
+                python scripts/check_notebook.py --all --repo-dir ai-foundations \
+                  --summary /workspace/notebook_summary.md'"
 
-      # Step 6: Run notebook checks (all notebooks including GPU).
-      - name: Run notebook syntax and import checks
+      - name: Write job summary
+        if: always()
         run: |
-          gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
-            --ssh-flag="-o StrictHostKeyChecking=no" \
-            --command="cd /workspace && source venv/bin/activate && \
-              python scripts/generate_manifest.py \
-                --repo-dir ai-foundations \
-                --overrides notebook_overrides.yml && \
-              python scripts/check_notebook.py --all --repo-dir ai-foundations \
-                --summary /workspace/check_summary.md"
           gcloud compute scp --zone="$GCE_ZONE" --quiet \
             --strict-host-key-checking=no \
-            "$INSTANCE_NAME":/workspace/check_summary.md \
-            /tmp/check_summary.md 2>/dev/null || true
-          cat /tmp/check_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+            "$INSTANCE_NAME":/workspace/pytest_output.txt \
+            /tmp/pytest_output.txt 2>/dev/null || true
+          gcloud compute scp --zone="$GCE_ZONE" --quiet \
+            --strict-host-key-checking=no \
+            "$INSTANCE_NAME":/workspace/notebook_summary.md \
+            /tmp/notebook_summary.md 2>/dev/null || true
+          echo "## Unit Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No pytest output." >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
-      # Step 7: Run pytest.
-      - name: Run pytest
-        run: |
-          gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
-            --ssh-flag="-o StrictHostKeyChecking=no" \
-            --command="cd /workspace && source venv/bin/activate && \
-              pytest tests/ -v --import-mode=importlib --tb=short"
-
-      # Step 8: Copy results back.
       - name: Copy results
         if: always()
         run: |
@@ -161,7 +160,6 @@ jobs:
           name: gpu-test-results
           path: results/gpu/
 
-      # Always delete the instance, even if tests fail.
       - name: Delete GCE instance
         if: always()
         run: |

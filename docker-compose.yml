@@ -1,0 +1,50 @@
+services:
+  # Run all CPU tests (pytest + notebook checks).
+  test:
+    build: .
+    command: >
+      bash -c "
+        pytest tests/ -v --import-mode=importlib --tb=short &&
+        python scripts/generate_manifest.py &&
+        python scripts/check_notebook.py --all --skip-gpu
+      "
+
+  # Run only pytest.
+  pytest:
+    build: .
+    command: pytest tests/ -v --import-mode=importlib --tb=short
+
+  # Run only notebook checks.
+  check:
+    build: .
+    command: >
+      bash -c "
+        python scripts/generate_manifest.py &&
+        python scripts/check_notebook.py --all --skip-gpu
+      "
+
+  # Drop into a shell for debugging.
+  shell:
+    build: .
+    command: bash
+    stdin_open: true
+    tty: true
+
+  # GPU tests (requires --gpus=all or nvidia runtime).
+  test-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: >
+      bash -c "
+        pytest tests/ -v --import-mode=importlib --tb=short &&
+        python scripts/generate_manifest.py &&
+        python scripts/check_notebook.py --all
+      "

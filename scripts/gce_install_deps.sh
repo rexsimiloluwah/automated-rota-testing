@@ -1,22 +1,19 @@
 #!/usr/bin/env bash
-# Install Python dependencies on the GCE GPU instance.
-# This script runs ON the instance after project files have been copied.
+# Install dependencies inside the Colab Docker container.
+# This script runs INSIDE the container, not on the host.
 
 set -e
 
 cd /workspace
-source venv/bin/activate
 
-echo "Upgrading pip..."
-pip install --quiet --upgrade pip
+echo "Cloning upstream repo..."
+git clone --depth 1 --branch main \
+    https://github.com/google-deepmind/ai-foundations.git
 
-echo "Installing project dependencies (gpu extras)..."
-pip install --quiet ".[gpu]"
+echo "Installing ai_foundations..."
+pip install --no-cache-dir -e ai-foundations
 
-echo "Installing ai_foundations (no-deps)..."
-pip install --quiet --no-deps -e ai-foundations
-
-echo "Installing Jupyter kernel..."
-python -m ipykernel install --name python3 2>/dev/null || true
+echo "Installing testing tools..."
+pip install --no-cache-dir pytest pyyaml
 
 echo "Dependencies installed."
