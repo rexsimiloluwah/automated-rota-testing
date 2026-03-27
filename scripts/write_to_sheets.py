@@ -121,9 +121,9 @@ def ensure_sheet(spreadsheet, sheet_name):
         ws = spreadsheet.worksheet(sheet_name)
     except gspread.exceptions.WorksheetNotFound:
         ws = spreadsheet.add_worksheet(
-            title=sheet_name, rows=1, cols=len(headers)
+            title=sheet_name, rows=100, cols=len(headers)
         )
-        ws.update(f"A1:{chr(64 + len(headers))}1", [headers])
+        ws.update(range_name=f"A1:{chr(64 + len(headers))}1", values=[headers])
         ws.format("1:1", HEADER_FORMAT)
 
         # Freeze header row.
