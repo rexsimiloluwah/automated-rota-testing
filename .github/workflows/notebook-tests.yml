@@ -10,10 +10,13 @@ on:
     - cron: "0 2 * * *"
   workflow_dispatch:
 
-# Required for Workload Identity Federation (GPU job).
 permissions:
   contents: read
   id-token: write
+
+env:
+  COLAB_GPU_IMAGE: us-docker.pkg.dev/colab-images/public/runtime
+  GCE_ZONE: us-central1-a
 
 jobs:
   unit-tests:
@@ -35,6 +38,16 @@ jobs:
               2>&1 | tee /workspace/results/pytest_output.txt
           "
 
+      - name: Parse results
+        if: always()
+        run: |
+          docker run --rm -v "$PWD/results:/workspace/results" -v "$PWD/scripts:/workspace/scripts" nb-test bash -c "
+            python /workspace/scripts/write_results.py \
+              --pytest-output /workspace/results/pytest_output.txt \
+              --output /workspace/results/results.json \
+              --job-name 'Unit Tests'
+          "
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
@@ -53,13 +66,23 @@ jobs:
       - name: Build Colab test image
         run: docker build -t nb-test .
 
-      - name: Check notebook syntax and imports
+      - name: Check notebooks
         run: |
           mkdir -p results
           docker run --rm -v "$PWD/results:/workspace/results" nb-test bash -c "
             python scripts/generate_manifest.py;
             python scripts/check_notebook.py --all --skip-gpu \
               --summary /workspace/results/notebook_summary.md
+          "
+
+      - name: Parse results
+        if: always()
+        run: |
+          docker run --rm -v "$PWD/results:/workspace/results" -v "$PWD/scripts:/workspace/scripts" nb-test bash -c "
+            python /workspace/scripts/write_results.py \
+              --notebook-summary /workspace/results/notebook_summary.md \
+              --output /workspace/results/results.json \
+              --job-name 'Notebook Imports'
           "
 
       - name: Upload results
@@ -85,10 +108,21 @@ jobs:
           mkdir -p results
           docker run --rm -v "$PWD/results:/workspace/results" nb-test bash -c "
             pytest tests/ -v --import-mode=importlib --tb=short \
-              2>&1 | tee /workspace/results/smoke_pytest_output.txt;
+              2>&1 | tee /workspace/results/pytest_output.txt;
             python scripts/generate_manifest.py;
             python scripts/check_notebook.py --all --skip-gpu \
-              --summary /workspace/results/smoke_notebook_summary.md
+              --summary /workspace/results/notebook_summary.md
+          "
+
+      - name: Parse results
+        if: always()
+        run: |
+          docker run --rm -v "$PWD/results:/workspace/results" -v "$PWD/scripts:/workspace/scripts" nb-test bash -c "
+            python /workspace/scripts/write_results.py \
+              --pytest-output /workspace/results/pytest_output.txt \
+              --notebook-summary /workspace/results/notebook_summary.md \
+              --output /workspace/results/results.json \
+              --job-name 'Smoke Tests'
           "
 
       - name: Upload results
@@ -98,141 +132,143 @@ jobs:
           name: notebook-smoke-results
           path: results/
 
-  # GPU tests — disabled for now. Uncomment when WIF is configured.
-  # gpu-tests:
-  #   runs-on: ubuntu-latest
-  #   timeout-minutes: 45
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-  #
-  #     - name: Authenticate to Google Cloud
-  #       uses: google-github-actions/auth@v2
-  #       with:
-  #         workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-  #         service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-  #
-  #     - name: Set up gcloud CLI
-  #       uses: google-github-actions/setup-gcloud@v2
-  #
-  #     - name: Set instance name
-  #       run: echo "INSTANCE_NAME=nb-gpu-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
-  #
-  #     - name: Create GCE instance
-  #       run: |
-  #         gcloud compute instances create "$INSTANCE_NAME" \
-  #           --zone=us-central1-a \
-  #           --machine-type=n1-standard-4 \
-  #           --accelerator=type=nvidia-tesla-t4,count=1 \
-  #           --maintenance-policy=TERMINATE \
-  #           --image-family=pytorch-2-7-cu128-ubuntu-2204-nvidia-570 \
-  #           --image-project=deeplearning-platform-release \
-  #           --boot-disk-size=100GB \
-  #           --boot-disk-type=pd-ssd \
-  #           --network=similoluwa-vpc \
-  #           --subnet=similoluwa-vpc \
-  #           --metadata-from-file=startup-script=scripts/gce_startup.sh \
-  #           --metadata=install-nvidia-driver=True \
-  #           --scopes=cloud-platform \
-  #           --tags=allow-ssh \
-  #           --quiet
-  #
-  #     - name: Wait for SSH
-  #       run: |
-  #         for i in $(seq 1 12); do
-  #           if gcloud compute ssh "$INSTANCE_NAME" --zone=us-central1-a --quiet \
-  #             --ssh-flag="-o StrictHostKeyChecking=no" \
-  #             --ssh-flag="-o ConnectTimeout=10" \
-  #             --command="echo SSH_OK" 2>/dev/null | grep -q "SSH_OK"; then
-  #             echo "SSH available."; exit 0
-  #           fi
-  #           echo "Waiting for SSH... ($((i * 10))s)"; sleep 10
-  #         done
-  #         echo "Error: SSH not available after 120s."; exit 1
-  #
-  #     - name: Wait for startup script
-  #       run: |
-  #         for i in $(seq 1 45); do
-  #           if gcloud compute ssh "$INSTANCE_NAME" --zone=us-central1-a --quiet \
-  #             --ssh-flag="-o StrictHostKeyChecking=no" \
-  #             --ssh-flag="-o ConnectTimeout=10" \
-  #             --command="test -f /workspace/.ready && echo READY" \
-  #             2>/dev/null | grep -q "READY"; then
-  #             echo "Instance is ready."; exit 0
-  #           fi
-  #           echo "Waiting for startup... ($((i * 20))s)"; sleep 20
-  #         done
-  #         echo "Error: startup did not complete within 900s."; exit 1
-  #
-  #     - name: Copy project files
-  #       run: |
-  #         gcloud compute scp --recurse --zone=us-central1-a --quiet \
-  #           --strict-host-key-checking=no \
-  #           scripts tests pyproject.toml notebook_overrides.yml \
-  #           "$INSTANCE_NAME":/workspace/
-  #
-  #     - name: Install dependencies and run tests
-  #       run: |
-  #         gcloud compute ssh "$INSTANCE_NAME" --zone=us-central1-a --quiet \
-  #           --ssh-flag="-o StrictHostKeyChecking=no" \
-  #           --command="sudo docker run --rm --gpus=all \
-  #             --entrypoint '' \
-  #             -v /workspace:/workspace \
-  #             us-docker.pkg.dev/colab-images/public/runtime \
-  #             bash -c 'bash /workspace/scripts/gce_install_deps.sh && \
-  #               cd /workspace && \
-  #               pytest tests/ -v --import-mode=importlib --tb=short \
-  #                 2>&1 | tee /workspace/gpu_pytest_output.txt; \
-  #               python scripts/generate_manifest.py \
-  #                 --repo-dir ai-foundations \
-  #                 --overrides notebook_overrides.yml; \
-  #               python scripts/check_notebook.py --all --repo-dir ai-foundations \
-  #                 --summary /workspace/gpu_notebook_summary.md'"
-  #
-  #     - name: Copy results back
-  #       if: always()
-  #       run: |
-  #         mkdir -p results/gpu
-  #         gcloud compute scp --zone=us-central1-a --quiet \
-  #           --strict-host-key-checking=no \
-  #           "$INSTANCE_NAME":/workspace/gpu_pytest_output.txt results/gpu/ 2>/dev/null || true
-  #         gcloud compute scp --zone=us-central1-a --quiet \
-  #           --strict-host-key-checking=no \
-  #           "$INSTANCE_NAME":/workspace/gpu_notebook_summary.md results/gpu/ 2>/dev/null || true
-  #         gcloud compute scp --zone=us-central1-a --quiet \
-  #           --strict-host-key-checking=no \
-  #           "$INSTANCE_NAME":/workspace/startup.log results/gpu/ 2>/dev/null || true
-  #
-  #     - name: Upload results
-  #       if: always()
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: gpu-test-results
-  #         path: results/gpu/
-  #
-  #     - name: Delete GCE instance
-  #       if: always()
-  #       run: |
-  #         gcloud compute instances delete "$INSTANCE_NAME" \
-  #           --zone=us-central1-a --quiet 2>/dev/null || true
+  # GPU tests — uncomment when WIF is configured.
+  gpu-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+  
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+  
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+  
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+  
+      - name: Set instance name
+        run: echo "INSTANCE_NAME=nb-gpu-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+  
+      - name: Create GCE instance
+        run: |
+          gcloud compute instances create "$INSTANCE_NAME" \
+            --zone="$GCE_ZONE" \
+            --machine-type=n1-standard-4 \
+            --accelerator=type=nvidia-tesla-t4,count=1 \
+            --maintenance-policy=TERMINATE \
+            --image-family=pytorch-2-7-cu128-ubuntu-2204-nvidia-570 \
+            --image-project=deeplearning-platform-release \
+            --boot-disk-size=100GB \
+            --boot-disk-type=pd-ssd \
+            --network=similoluwa-vpc \
+            --subnet=similoluwa-vpc \
+            --metadata-from-file=startup-script=scripts/gce_startup.sh \
+            --metadata=install-nvidia-driver=True \
+            --scopes=cloud-platform \
+            --tags=allow-ssh \
+            --quiet
+  
+      - name: Wait for SSH
+        run: |
+          for i in $(seq 1 12); do
+            if gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+              --ssh-flag="-o StrictHostKeyChecking=no" \
+              --ssh-flag="-o ConnectTimeout=10" \
+              --command="echo SSH_OK" 2>/dev/null | grep -q "SSH_OK"; then
+              echo "SSH available."; exit 0
+            fi
+            echo "Waiting for SSH... ($((i * 10))s)"; sleep 10
+          done
+          echo "Error: SSH not available after 120s."; exit 1
+  
+      - name: Wait for startup script
+        run: |
+          for i in $(seq 1 45); do
+            if gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+              --ssh-flag="-o StrictHostKeyChecking=no" \
+              --ssh-flag="-o ConnectTimeout=10" \
+              --command="test -f /workspace/.ready && echo READY" \
+              2>/dev/null | grep -q "READY"; then
+              echo "Instance is ready."; exit 0
+            fi
+            echo "Waiting for startup... ($((i * 20))s)"; sleep 20
+          done
+          echo "Error: startup did not complete within 900s."; exit 1
+  
+      - name: Copy project files
+        run: |
+          gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
+            --strict-host-key-checking=no \
+            scripts tests pyproject.toml notebook_overrides.yml \
+            "$INSTANCE_NAME":/workspace/
+  
+      - name: Install dependencies and run tests
+        run: |
+          gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+            --ssh-flag="-o StrictHostKeyChecking=no" \
+            --command="sudo docker run --rm --gpus=all \
+              --entrypoint '' \
+              -v /workspace:/workspace \
+              $COLAB_GPU_IMAGE \
+              bash -c 'bash /workspace/scripts/gce_install_deps.sh && \
+                cd /workspace && \
+                pytest tests/ -v --import-mode=importlib --tb=short \
+                  2>&1 | tee /workspace/results/pytest_output.txt; \
+                python scripts/generate_manifest.py \
+                  --repo-dir ai-foundations \
+                  --overrides notebook_overrides.yml; \
+                python scripts/check_notebook.py --all --repo-dir ai-foundations \
+                  --summary /workspace/results/notebook_summary.md; \
+                python scripts/write_results.py \
+                  --pytest-output /workspace/results/pytest_output.txt \
+                  --notebook-summary /workspace/results/notebook_summary.md \
+                  --output /workspace/results/results.json \
+                  --job-name \"GPU Tests\"'"
+  
+      - name: Copy results back
+        if: always()
+        run: |
+          mkdir -p results/gpu
+          gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
+            --strict-host-key-checking=no \
+            "$INSTANCE_NAME":/workspace/results/ results/gpu/ 2>/dev/null || true
+  
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-test-results
+          path: results/gpu/
+  
+      - name: Delete GCE instance
+        if: always()
+        run: |
+          gcloud compute instances delete "$INSTANCE_NAME" \
+            --zone="$GCE_ZONE" --quiet 2>/dev/null || true
 
-  # Collect results from all jobs and write summary.
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     if: always()
     needs: [unit-tests, notebook-imports, notebook-smoke]
     # Add gpu-tests to needs when enabled.
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: all-results/
 
-      - name: Write job summary
+      - name: Write GitHub summary
         run: |
-          # Unit test results
+          # Unit test pytest output.
           echo "## Unit Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -240,24 +276,51 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          # Notebook import check results
+          # Notebook import check results.
           cat all-results/notebook-import-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          # Smoke test results
+          # Smoke test results.
           echo "## Smoke Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          cat all-results/notebook-smoke-results/smoke_pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No output." >> "$GITHUB_STEP_SUMMARY"
+          cat all-results/notebook-smoke-results/pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No output." >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          cat all-results/notebook-smoke-results/smoke_notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          cat all-results/notebook-smoke-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
-          # GPU test results (when enabled)
+          # GPU results (when enabled).
           # echo "## GPU Test Results" >> "$GITHUB_STEP_SUMMARY"
-          # echo "" >> "$GITHUB_STEP_SUMMARY"
-          # echo '```' >> "$GITHUB_STEP_SUMMARY"
-          # cat all-results/gpu-test-results/gpu_pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No output." >> "$GITHUB_STEP_SUMMARY"
-          # echo '```' >> "$GITHUB_STEP_SUMMARY"
-          # echo "" >> "$GITHUB_STEP_SUMMARY"
-          # cat all-results/gpu-test-results/gpu_notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          # cat all-results/gpu-test-results/pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          # cat all-results/gpu-test-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install sheets dependencies
+        run: pip install gspread google-auth google-api-python-client
+
+      # Authenticate for Google Sheets.
+      - name: Authenticate to Google Cloud
+        if: env.WRITE_SHEETS == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Write to Google Sheets
+        if: env.WRITE_SHEETS == 'true'
+        env:
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: |
+          python scripts/write_to_sheets.py \
+            --results-dir all-results/ \
+            --folder-id "$GOOGLE_DRIVE_FOLDER_ID" \
+            --run-id "${{ github.run_id }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+    env:
+      # Set to 'true' when WIF and Drive folder are configured.
+      WRITE_SHEETS: 'true'

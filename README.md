@@ -182,18 +182,42 @@ Add these two secrets to your GitHub repository (Settings > Secrets and variable
 ```bash
 gcloud services enable iamcredentials.googleapis.com
 gcloud services enable compute.googleapis.com
+gcloud services enable sheets.googleapis.com
+gcloud services enable drive.googleapis.com
 ```
 
-Once configured, the `gpu-tests.yml` workflow will authenticate automatically on every run.
+### 6. Share your Drive folder with the service account
+
+Share the Google Drive results folder with the service account email as an **Editor**:
+
+```
+notebook-ci-runner@<PROJECT_ID>.iam.gserviceaccount.com
+```
+
+### 7. Add the Drive folder secret
+
+Add one more secret to your GitHub repository:
+
+| Secret | Value |
+|--------|-------|
+| `GOOGLE_DRIVE_FOLDER_ID` | The folder ID from the Drive URL |
+
+### 8. Enable Google Sheets writing
+
+In `.github/workflows/notebook-tests.yml`, change `WRITE_SHEETS: 'false'` to `WRITE_SHEETS: 'true'` in the `report` job.
+
+Once configured, every workflow run will:
+- Write results to the GitHub Actions summary
+- Create a new Google Sheet in your Drive folder with styled results
 
 ## Project structure
 
 ```
 .github/workflows/
-  unit-tests.yml              pytest in Colab container (push/PR/nightly)
-  notebook-imports.yml        Notebook checks in Colab container (push/PR/nightly)
-  notebook-smoke.yml          pytest + notebook checks (weekly)
-  gpu-tests.yml               GPU tests via GCE + Colab container (weekly)
+  notebook-tests.yml          Main workflow: all jobs + report (push/PR/nightly)
+  unit-tests.yml              Standalone pytest (manual)
+  notebook-imports.yml        Standalone notebook checks (manual)
+  gpu-tests.yml               Standalone GPU tests (manual)
 tests/
   test_utilities.py           Tests for ai_foundations utility functions
   test_feedback_solutions.py  Solution code validated through feedback functions
@@ -201,6 +225,8 @@ scripts/
   sync_upstream.sh            Shallow-clone upstream repo
   generate_manifest.py        Auto-classify notebooks, build manifest
   check_notebook.py           Validate notebook syntax and imports
+  write_results.py            Parse test outputs into structured JSON
+  write_to_sheets.py          Write results to Google Sheets
   gce_gpu_test.sh             Local: ephemeral GCE GPU instance lifecycle
   gce_startup.sh              Startup script for GCE GPU instance
   gce_install_deps.sh         Install deps inside Colab Docker container
@@ -209,7 +235,7 @@ scripts/
 Dockerfile                    Colab CPU image for CI and local testing
 Dockerfile.gpu                Colab GPU image for GPU testing
 docker-compose.yml            Local Docker testing commands
-pyproject.toml                Project dependencies (cpu/gpu extras)
+pyproject.toml                Project dependencies (cpu/gpu/sheets extras)
 uv.lock                      Locked dependency versions
 notebook_overrides.yml        Manual skip/timeout overrides
 ```

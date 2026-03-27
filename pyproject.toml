@@ -30,3 +30,10 @@ gpu = [
     "automated-rota-testing[cpu]",
     "keras-nlp",
 ]
+
+# Google Sheets reporting.
+sheets = [
+    "gspread>=6.0",
+    "google-api-python-client>=2.0",
+    "google-auth>=2.0",
+]
