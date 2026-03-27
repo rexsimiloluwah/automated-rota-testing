@@ -4,44 +4,176 @@ Automated testing infrastructure for the [google-deepmind/ai-foundations](https:
 
 This repo does **not** contain the notebooks themselves. It clones them fresh from upstream on every CI run to test the latest state.
 
-## Environment consistency
+## Architecture Overview
 
-All tests run inside the **official Google Colab Docker image** (`us-docker.pkg.dev/colab-images/public/cpu-runtime` for CPU, `us-docker.pkg.dev/colab-images/public/runtime` for GPU). This guarantees that test results match what students experience on Colab — same Python version, same package versions, same runtime behavior.
+```mermaid
+flowchart TB
+    subgraph Upstream["google-deepmind/ai-foundations"]
+        NB["36 Notebooks<br>(Courses 1-5, 7)"]
+        PKG["ai_foundations package"]
+        FB["feedback/ validators"]
+    end
 
-## Workflows
+    subgraph This Repo
+        TS["tests/<br>test_utilities.py<br>test_feedback_solutions.py"]
+        SC["scripts/<br>check_notebook.py<br>generate_manifest.py"]
+        WF["GitHub Actions<br>Workflows"]
+        DC["Dockerfile<br>(Colab CPU)"]
+        GCE["gce_gpu_test.sh<br>(Colab GPU on GCE)"]
+    end
+
+    subgraph Outputs
+        GHS["GitHub Actions<br>Summary"]
+        GSH["Google Sheets<br>Results"]
+    end
+
+    NB --> SC
+    PKG --> TS
+    FB --> TS
+    SC --> WF
+    TS --> WF
+    DC --> WF
+    GCE --> WF
+    WF --> GHS
+    WF --> GSH
+```
+
+## Environment Consistency
+
+All tests run inside the **official Google Colab Docker image**. This guarantees results match what students experience on Colab.
+
+| Environment | Docker Image |
+|-------------|-------------|
+| CPU tests | `us-docker.pkg.dev/colab-images/public/cpu-runtime` |
+| GPU tests | `us-docker.pkg.dev/colab-images/public/runtime` |
+
+## GitHub Actions Workflow
+
+```mermaid
+flowchart LR
+    subgraph Triggers
+        P["Push/PR"]
+        N["Nightly<br>02:00 UTC"]
+        M["Manual"]
+    end
+
+    subgraph Jobs["notebook-tests.yml"]
+        direction TB
+        UT["unit-tests<br>(Colab CPU)"]
+        NI["notebook-imports<br>(Colab CPU)"]
+        NS["notebook-smoke<br>(Colab CPU)"]
+        GT["gpu-tests<br>(GCE + Colab GPU)"]
+        R["report"]
+    end
+
+    subgraph Outputs
+        SM["GitHub<br>Summary"]
+        SH["Google<br>Sheets"]
+    end
+
+    P --> Jobs
+    N --> Jobs
+    M --> Jobs
+
+    UT --> R
+    NI --> R
+    NS --> R
+    GT --> R
+    R --> SM
+    R --> SH
+```
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `unit-tests.yml` | push/PR, nightly 02:00 UTC, manual | pytest (utility + feedback solution tests) |
-| `notebook-imports.yml` | push/PR, nightly 03:00 UTC, manual | Notebook syntax & import checks (CPU only) |
-| `notebook-smoke.yml` | weekly Sun 04:00 UTC, manual | pytest + notebook checks (CPU only) |
-| `gpu-tests.yml` | weekly Sun 05:00 UTC, manual | Spins up GCE T4 GPU instance, runs all checks |
+| `notebook-tests.yml` | push/PR, nightly, manual | All jobs + report (main workflow) |
+| `unit-tests.yml` | manual only | Standalone pytest |
+| `notebook-imports.yml` | manual only | Standalone notebook checks |
+| `gpu-tests.yml` | manual only | Standalone GPU tests |
 
-All workflows use the Colab Docker image as the execution environment.
+## Notebook Testing Flow
 
-## How it works
+```mermaid
+flowchart TD
+    A["Clone upstream repo<br>(sync_upstream.sh)"] --> B["Scan notebooks<br>(generate_manifest.py)"]
+    B --> C{"GPU required?"}
+    C -->|No| D["Check syntax & imports<br>(check_notebook.py)"]
+    C -->|Yes - CPU workflow| E["Skip"]
+    C -->|Yes - GPU workflow| F["Check on GCE T4"]
+    D --> G["Parse results<br>(write_results.py)"]
+    F --> G
+    E --> G
+    G --> H["Upload artifact<br>(results.json)"]
+
+    subgraph Detection
+        B --> |"Markdown: 'T4 GPU',<br>'Change runtime type'"| C
+        B --> |"Code: load_gemma(),<br>keras_nlp.models.Gemma"| C
+    end
+```
+
+## GPU Testing Flow
+
+```mermaid
+flowchart TD
+    A["Authenticate via WIF<br>(keyless)"] --> B["Create GCE instance<br>n1-standard-4 + T4 GPU"]
+    B --> C["Wait for SSH"]
+    C --> D["Wait for startup script<br>(NVIDIA drivers + Docker pull)"]
+    D --> E["Copy project files<br>via SCP"]
+    E --> F["Run in Colab GPU container"]
+
+    subgraph Container["docker run --gpus=all (Colab GPU image)"]
+        F --> G["Install ai_foundations"]
+        G --> H["Run pytest"]
+        H --> I["Run notebook checks<br>(all 36 notebooks)"]
+        I --> J["Write results.json"]
+    end
+
+    J --> K["Copy results back"]
+    K --> L["Delete GCE instance<br>(always, even on failure)"]
+```
+
+## How It Works
 
 ### Test suite (`tests/`)
 
-**`test_utilities.py`** — tests pure functions in `ai_foundations`:
+**`test_utilities.py`** - tests pure functions in `ai_foundations`:
 - `bytes_to_gb()`, `format_flops()`, `format_large_number()`, `format_qa()`
 
-**`test_feedback_solutions.py`** — passes reference solution code through the upstream feedback validation functions:
+**`test_feedback_solutions.py`** - passes reference solution code through the upstream feedback validation functions:
 - Course 1: n-gram generation, counting, model building, vocabulary
 - Course 2: HTML cleaning, Unicode cleaning
 - Course 7: FLOPs estimation, GPU memory calculations
 
 If upstream changes break a solution or a feedback validator, these tests catch it.
 
-### Notebook validation (`scripts/`)
+### How feedback solution testing works
 
+The upstream notebooks have a pattern: each coding activity has placeholder code (`= ...`) for students to fill in, and a "Solutions" section at the bottom with reference implementations. The upstream `feedback/` module contains validation functions (e.g., `test_clean_html(student_func)`) that take a student's function as an argument and check it against hardcoded test cases.
+
+These validation functions **cannot be run directly with pytest** because they require student code as arguments. Our approach:
+
+1. **Extract** the reference solution functions from the notebooks' Solutions sections
+2. **Hardcode** them in `tests/test_feedback_solutions.py`
+3. **Pass** them into the upstream validation functions as if they were student submissions
+
+```python
+# In the notebook, students write:
+def clean_html(text):
+    text = re.sub(r"<.*?>", "", text)  # Student fills this in
+    ...
+
+# The notebook calls the validator:
+preprocess.test_clean_html(clean_html)  # Checks student's work
+
+# Our test does the same thing, but with the reference solution:
+def test_clean_html(self):
+    from ai_foundations.feedback.course_2 import preprocess
+    preprocess.test_clean_html(clean_html)  # clean_html = our copy of the solution
 ```
-sync_upstream.sh          Clone google-deepmind/ai-foundations@main
-        |
-generate_manifest.py      Scan notebooks, auto-classify GPU/CPU, merge overrides
-        |
-check_notebook.py         Validate syntax and imports per notebook
-```
+
+This validates that:
+- The solution code is correct (passes the validator)
+- The validator logic works (doesn't reject correct solutions)
+- The package API hasn't changed (function signatures still match)
 
 ### GPU detection
 
@@ -63,11 +195,11 @@ overrides:
     reason: "Requires Kaggle credentials for Gemma model download"
 ```
 
-## Local testing
+## Local Testing
 
 ### Using Docker (recommended)
 
-Docker provides the exact Colab environment. No Python version or package mismatch.
+Docker provides the exact Colab environment.
 
 ```bash
 # Run all CPU tests (pytest + notebook checks)
@@ -111,7 +243,7 @@ Note: results may differ from Colab due to Python version and package difference
 
 ### Run GPU tests locally
 
-Requires `gcloud` CLI authenticated with a project that has T4 GPU quota. Runs tests inside the Colab GPU Docker image on an ephemeral GCE instance.
+Requires `gcloud` CLI authenticated with a project that has T4 GPU quota.
 
 ```bash
 # Full run: create instance, run tests, delete instance
@@ -170,12 +302,13 @@ gcloud iam service-accounts add-iam-policy-binding \
 
 ### 4. Add GitHub secrets
 
-Add these two secrets to your GitHub repository (Settings > Secrets and variables > Actions):
+Add these secrets to your GitHub repository (Settings > Secrets and variables > Actions):
 
 | Secret | Value |
 |--------|-------|
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | `projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/github-pool/providers/github-provider` |
 | `GCP_SERVICE_ACCOUNT` | `notebook-ci-runner@<PROJECT_ID>.iam.gserviceaccount.com` |
+| `GOOGLE_SPREADSHEET_ID` | The spreadsheet ID from the Google Sheets URL |
 
 ### 5. Enable required APIs
 
@@ -186,64 +319,71 @@ gcloud services enable sheets.googleapis.com
 gcloud services enable drive.googleapis.com
 ```
 
-### 6. Share your Drive folder with the service account
+### 6. Share the results spreadsheet with the service account
 
-Share the Google Drive results folder with the service account email as an **Editor**:
+Share the Google Sheets results spreadsheet with the service account email as an **Editor**:
 
 ```
 notebook-ci-runner@<PROJECT_ID>.iam.gserviceaccount.com
 ```
 
-### 7. Add the Drive folder secret
-
-Add one more secret to your GitHub repository:
-
-| Secret | Value |
-|--------|-------|
-| `GOOGLE_DRIVE_FOLDER_ID` | The folder ID from the Drive URL |
-
-### 8. Enable Google Sheets writing
-
-In `.github/workflows/notebook-tests.yml`, change `WRITE_SHEETS: 'false'` to `WRITE_SHEETS: 'true'` in the `report` job.
-
-Once configured, every workflow run will:
-- Write results to the GitHub Actions summary
-- Create a new Google Sheet in your Drive folder with styled results
-
-## Project structure
+## Project Structure
 
 ```
-.github/workflows/
-  notebook-tests.yml          Main workflow: all jobs + report (push/PR/nightly)
-  unit-tests.yml              Standalone pytest (manual)
-  notebook-imports.yml        Standalone notebook checks (manual)
-  gpu-tests.yml               Standalone GPU tests (manual)
-tests/
-  test_utilities.py           Tests for ai_foundations utility functions
-  test_feedback_solutions.py  Solution code validated through feedback functions
-scripts/
-  sync_upstream.sh            Shallow-clone upstream repo
-  generate_manifest.py        Auto-classify notebooks, build manifest
-  check_notebook.py           Validate notebook syntax and imports
-  write_results.py            Parse test outputs into structured JSON
-  write_to_sheets.py          Write results to Google Sheets
-  gce_gpu_test.sh             Local: ephemeral GCE GPU instance lifecycle
-  gce_startup.sh              Startup script for GCE GPU instance
-  gce_install_deps.sh         Install deps inside Colab Docker container
-  inject_solutions.py         Replace placeholders with solution code (future use)
-  run_notebook.py             Execute notebook via papermill (future use)
-Dockerfile                    Colab CPU image for CI and local testing
-Dockerfile.gpu                Colab GPU image for GPU testing
-docker-compose.yml            Local Docker testing commands
-pyproject.toml                Project dependencies (cpu/gpu/sheets extras)
-uv.lock                      Locked dependency versions
-notebook_overrides.yml        Manual skip/timeout overrides
+automated-rota-testing/
+├── .github/
+│   └── workflows/
+│       ├── notebook-tests.yml          # Main workflow: all jobs + report
+│       ├── unit-tests.yml              # Standalone pytest (manual)
+│       ├── notebook-imports.yml        # Standalone notebook checks (manual)
+│       └── gpu-tests.yml               # Standalone GPU tests (manual)
+├── tests/
+│   ├── test_utilities.py               # Tests for ai_foundations utility functions
+│   └── test_feedback_solutions.py      # Solution code through feedback validators
+├── scripts/
+│   ├── sync_upstream.sh                # Shallow-clone upstream repo
+│   ├── generate_manifest.py            # Auto-classify notebooks (GPU/CPU)
+│   ├── check_notebook.py               # Validate notebook syntax and imports
+│   ├── write_results.py                # Parse test outputs into structured JSON
+│   ├── write_to_sheets.py              # Append results to Google Sheets
+│   ├── gce_gpu_test.sh                 # Local: ephemeral GCE GPU instance lifecycle
+│   ├── gce_startup.sh                  # Startup script for GCE GPU instance
+│   ├── gce_install_deps.sh             # Install deps inside Colab Docker container
+│   ├── inject_solutions.py             # Replace placeholders with solutions (future)
+│   └── run_notebook.py                 # Execute notebook via papermill (future)
+├── Dockerfile                          # Colab CPU image for CI and local testing
+├── Dockerfile.gpu                      # Colab GPU image for GPU testing
+├── docker-compose.yml                  # Local Docker testing commands
+├── pyproject.toml                      # Project dependencies (cpu/gpu/sheets extras)
+├── uv.lock                             # Locked dependency versions
+├── notebook_overrides.yml              # Manual skip/timeout overrides
+└── README.md
 ```
 
-## Notebook classification
+## Notebook Classification
 
 | Category | Count | Notes |
 |----------|-------|-------|
 | CPU-only | 21 | Tested in Colab CPU container |
 | GPU-required | 15 | Tested in Colab GPU container on GCE T4 |
 | Total | 36 | Across courses 1-5 and 7 |
+
+## Potential Failure Modes
+
+- [x] **Upstream package changes** → feedback validators or utility functions change signatures. Caught by `test_feedback_solutions.py` and `test_utilities.py`.
+- [x] **Upstream solution code changes** → reference solutions no longer pass validators. Caught by `test_feedback_solutions.py`.
+- [x] **Broken imports in notebooks** → upstream adds/renames a dependency. Caught by `check_notebook.py` import validation.
+- [x] **Syntax errors in notebooks** → upstream introduces invalid Python. Caught by `check_notebook.py` syntax validation.
+- [x] **Python version incompatibility** → code works on one Python version but not another (e.g., f-string backslash in 3.10 vs 3.12). Caught by running in the exact Colab Docker image.
+- [x] **Package version mismatch** → tests pass locally but fail on Colab due to different package versions. Resolved by using the official Colab Docker image everywhere.
+- [x] **GCE instance not cleaned up** → GPU test fails mid-run, leaving an orphaned instance. Resolved by `trap cleanup EXIT` in local script and `if: always()` in GitHub Actions.
+- [x] **SSH connectivity to GCE** → firewall rules, OS Login, or key issues block SSH. Resolved by using the correct VPC network, `StrictHostKeyChecking=no`, and timeout-based retry loops.
+- [x] **Docker entrypoint conflict** → Colab image starts Jupyter by default instead of running tests. Resolved with `--entrypoint ''` on all `docker run` commands.
+- [x] **Service account Drive quota** → service account has no Drive storage, can't create spreadsheets. Resolved by appending to a pre-existing shared spreadsheet instead of creating new files.
+- [x] **`tokenize` module shadowing** → upstream `feedback/course_2/tokenize/` directory shadows Python's stdlib `tokenize`. Resolved by not running pytest directly on the feedback folder.
+- [x] **Placeholder cells cause syntax errors** → student activity cells with `= ...` fail `ast.parse`. Resolved by detecting and skipping placeholder cells in `check_notebook.py`.
+- [x] **Multi-line function signatures** → solution injection fails on functions with signatures spanning multiple lines. Resolved in `inject_solutions.py` by waiting for the closing `:` before checking indentation.
+- [ ] **New notebooks added upstream** → `generate_manifest.py` auto-detects new notebooks, but new feedback tests may need manual addition to `test_feedback_solutions.py`.
+- [ ] **Kaggle-gated models** → notebooks requiring Kaggle credentials for Gemma downloads are skipped via `notebook_overrides.yml`. Not tested end-to-end.
+- [ ] **Colab Docker image updates** → Google may update the Colab image, changing Python/package versions. Tests will catch breakages but the image tag is not pinned.
+- [ ] **Network-dependent notebook cells** → notebooks that download datasets or models at runtime may fail if URLs change. Not currently tested (would require full notebook execution).
