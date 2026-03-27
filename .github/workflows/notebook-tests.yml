@@ -132,7 +132,7 @@ jobs:
           name: notebook-smoke-results
           path: results/
 
-  # GPU tests — uncomment when WIF is configured.
+  # GPU tests — runs on ephemeral GCE T4 instance with Colab GPU image.
   gpu-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -215,7 +215,7 @@ jobs:
               -v /workspace:/workspace \
               $COLAB_GPU_IMAGE \
               bash -c 'bash /workspace/scripts/gce_install_deps.sh && \
-                cd /workspace && \
+                cd /workspace && mkdir -p results && \
                 pytest tests/ -v --import-mode=importlib --tb=short \
                   2>&1 | tee /workspace/results/pytest_output.txt; \
                 python scripts/generate_manifest.py \
@@ -232,17 +232,26 @@ jobs:
       - name: Copy results back
         if: always()
         run: |
-          mkdir -p results/gpu
-          gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
+          mkdir -p results
+          gcloud compute scp --zone="$GCE_ZONE" --quiet \
             --strict-host-key-checking=no \
-            "$INSTANCE_NAME":/workspace/results/ results/gpu/ 2>/dev/null || true
-  
+            "$INSTANCE_NAME":/workspace/results/results.json \
+            results/results.json 2>/dev/null || true
+          gcloud compute scp --zone="$GCE_ZONE" --quiet \
+            --strict-host-key-checking=no \
+            "$INSTANCE_NAME":/workspace/results/pytest_output.txt \
+            results/pytest_output.txt 2>/dev/null || true
+          gcloud compute scp --zone="$GCE_ZONE" --quiet \
+            --strict-host-key-checking=no \
+            "$INSTANCE_NAME":/workspace/results/notebook_summary.md \
+            results/notebook_summary.md 2>/dev/null || true
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gpu-test-results
-          path: results/gpu/
+          path: results/
   
       - name: Delete GCE instance
         if: always()
@@ -254,8 +263,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: always()
-    needs: [unit-tests, notebook-imports, notebook-smoke]
-    # Add gpu-tests to needs when enabled.
+    needs: [unit-tests, notebook-imports, notebook-smoke, gpu-tests]
 
     steps:
       - name: Checkout
