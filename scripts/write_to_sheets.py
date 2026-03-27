@@ -120,11 +120,14 @@ def ensure_sheet(spreadsheet, sheet_name):
     try:
         ws = spreadsheet.worksheet(sheet_name)
     except gspread.exceptions.WorksheetNotFound:
+        num_cols = len(headers)
+        last_col = chr(64 + num_cols)
         ws = spreadsheet.add_worksheet(
-            title=sheet_name, rows=100, cols=len(headers)
+            title=sheet_name, rows=100, cols=num_cols
         )
-        ws.update(range_name=f"A1:{chr(64 + len(headers))}1", values=[headers])
-        ws.format("1:1", HEADER_FORMAT)
+        ws.update(range_name=f"A1:{last_col}1", values=[headers])
+        # Only format the header cells, not the entire row.
+        ws.format(f"A1:{last_col}1", HEADER_FORMAT)
 
         # Freeze header row.
         sheet_id = ws._properties["sheetId"]
@@ -298,6 +301,18 @@ def write_results(
             summary_ws, run_date, run_id, run_url,
             job_name, data.get("summary", {}),
         )
+
+    # Create GPU Tests sheet with placeholder if no GPU results.
+    if "GPU Tests" not in results:
+        print("  Writing GPU Tests placeholder...")
+        ws = ensure_sheet(sh, "GPU Tests")
+        # Only add placeholder if the sheet is empty (just headers).
+        if ws.row_count <= 1 or ws.get("A2") == []:
+            ws.append_rows(
+                [[run_date, run_id, "⏸️ DISABLED",
+                  "GPU tests not enabled", "n/a", "Pending WIF setup"]],
+                value_input_option="RAW",
+            )
 
     print("  Done.")
 
