@@ -306,13 +306,11 @@ def write_results(
     if "GPU Tests" not in results:
         print("  Writing GPU Tests placeholder...")
         ws = ensure_sheet(sh, "GPU Tests")
-        # Only add placeholder if the sheet is empty (just headers).
-        if ws.row_count <= 1 or ws.get("A2") == []:
-            ws.append_rows(
-                [[run_date, run_id, "⏸️ DISABLED",
-                  "GPU tests not enabled", "n/a", "Pending WIF setup"]],
-                value_input_option="RAW",
-            )
+        ws.append_rows(
+            [[run_date, run_id, "⏸️ DISABLED",
+              "GPU tests not enabled", "n/a", "Pending WIF setup"]],
+            value_input_option="RAW",
+        )
 
     print("  Done.")
 

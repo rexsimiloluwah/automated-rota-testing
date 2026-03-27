@@ -289,10 +289,18 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           cat all-results/notebook-smoke-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
-          # GPU results (when enabled).
-          # echo "## GPU Test Results" >> "$GITHUB_STEP_SUMMARY"
-          # cat all-results/gpu-test-results/pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-          # cat all-results/gpu-test-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          # GPU test results.
+          echo "## GPU Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -d "all-results/gpu-test-results" ]; then
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat all-results/gpu-test-results/pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No output." >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat all-results/gpu-test-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          else
+            echo "GPU tests not enabled for this run." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
