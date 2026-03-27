@@ -301,16 +301,17 @@ def create_spreadsheet(
         title += f" - Run #{run_id}"
 
     print(f"Creating spreadsheet: {title}")
-    sh = gc.create(title)
 
-    # Move to the target folder.
+    # Create the spreadsheet directly in the target folder.
+    # This uses the folder owner's quota instead of the service account's.
     drive = build_api("drive", "v3", credentials=creds)
-    drive.files().update(
-        fileId=sh.id,
-        addParents=folder_id,
-        removeParents="root",
-        fields="id, parents",
-    ).execute()
+    file_metadata = {
+        "name": title,
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+        "parents": [folder_id],
+    }
+    file = drive.files().create(body=file_metadata, fields="id").execute()
+    sh = gc.open_by_key(file["id"])
 
     # Write sheets for each job.
     sheets_created = []
