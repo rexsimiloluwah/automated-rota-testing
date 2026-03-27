@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
-"""Write test results to a Google Sheets spreadsheet.
+"""Append test results to a Google Sheets spreadsheet.
 
-Reads JSON result files produced by ``write_results.py`` and creates
-a styled Google Sheets spreadsheet with one sheet per test job plus
-a summary sheet. The spreadsheet is moved to a specified Drive folder.
+Reads JSON result files produced by ``write_results.py`` and appends
+rows to a pre-existing Google Sheets spreadsheet. The spreadsheet has
+four permanent sheets — one per test type. Each workflow run appends
+new rows with a timestamp and run ID, making it easy to filter and
+track trends over time.
+
+Spreadsheet structure:
+    - "Unit Tests"      — one row per pytest test per run
+    - "Notebook Checks" — one row per notebook per run
+    - "Smoke Tests"     — one row per pytest test per run
+    - "GPU Tests"       — one row per notebook/test per run
+    - "Run Summary"     — one row per run with pass/fail counts
 
 Auth:
-    - In GitHub Actions: uses Workload Identity Federation credentials
-      (picked up automatically via ``google.auth.default()``).
-    - Locally: uses OAuth credentials or service account impersonation.
+    - In GitHub Actions: uses WIF credentials via google.auth.default().
+    - Locally: uses OAuth or service account impersonation.
 
 Usage:
     python scripts/write_to_sheets.py \
         --results-dir all-results/ \
-        --folder-id YOUR_DRIVE_FOLDER_ID \
+        --spreadsheet-id YOUR_SPREADSHEET_ID \
         [--run-id 12345] [--run-url https://...]
 """
 
@@ -24,9 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import google.auth
-from googleapiclient.discovery import build as build_api
 
-# Optional: gspread for easier spreadsheet manipulation.
 try:
     import gspread
 except ImportError:
@@ -34,7 +40,40 @@ except ImportError:
     sys.exit(1)
 
 
-# Header style: bold white text on dark blue.
+STATUS_EMOJIS = {
+    "PASSED": "✅ PASSED",
+    "FAILED": "❌ FAILED",
+    "ERROR": "❌ ERROR",
+    "PASS": "✅ PASS",
+    "FAIL": "❌ FAIL",
+    "SKIP": "⏭️ SKIP",
+}
+
+# Sheet names and their headers.
+SHEETS = {
+    "Unit Tests": [
+        "Run Date", "Run ID", "Status", "Test File",
+        "Test Class", "Test Name",
+    ],
+    "Notebook Checks": [
+        "Run Date", "Run ID", "Status", "Notebook",
+        "Course", "Details",
+    ],
+    "Smoke Tests": [
+        "Run Date", "Run ID", "Status", "Test File",
+        "Test Class", "Test Name",
+    ],
+    "GPU Tests": [
+        "Run Date", "Run ID", "Status", "Test/Notebook",
+        "Type", "Details",
+    ],
+    "Run Summary": [
+        "Run Date", "Run ID", "Run URL", "Job",
+        "Pytest Passed", "Pytest Failed",
+        "Notebooks Passed", "Notebooks Failed", "Notebooks Skipped",
+    ],
+}
+
 HEADER_FORMAT = {
     "textFormat": {
         "bold": True,
@@ -48,30 +87,12 @@ HEADER_FORMAT = {
     "wrapStrategy": "WRAP",
 }
 
-# Data cell style.
-DATA_FORMAT = {
-    "wrapStrategy": "WRAP",
-    "textFormat": {"fontSize": 10},
-    "verticalAlignment": "TOP",
-}
-
-STATUS_EMOJIS = {
-    "PASSED": "✅ PASSED",
-    "FAILED": "❌ FAILED",
-    "ERROR": "❌ ERROR",
-    "PASS": "✅ PASS",
-    "FAIL": "❌ FAIL",
-    "SKIP": "⏭️ SKIP",
-    "DISABLED": "⏸️ DISABLED",
-}
-
 
 def load_results(results_dir: Path) -> dict[str, dict]:
     """Load all JSON result files from the results directory.
 
     Args:
-        results_dir: Directory containing artifact subdirectories,
-            each with a ``results.json`` file.
+        results_dir: Directory containing artifact subdirectories.
 
     Returns:
         Dict mapping job names to result dicts.
@@ -84,274 +105,207 @@ def load_results(results_dir: Path) -> dict[str, dict]:
     return results
 
 
-def style_sheet(spreadsheet, worksheet, num_rows, num_cols, col_widths=None):
-    """Apply consistent styling to a worksheet.
+def ensure_sheet(spreadsheet, sheet_name):
+    """Get or create a worksheet with the correct headers.
 
     Args:
         spreadsheet: The gspread Spreadsheet object.
-        worksheet: The gspread Worksheet object.
-        num_rows: Total number of rows including header.
-        num_cols: Number of columns.
-        col_widths: Optional dict mapping column index to pixel width.
-    """
-    # Style header row.
-    worksheet.format("1:1", HEADER_FORMAT)
-
-    # Style data rows.
-    if num_rows > 1:
-        worksheet.format(f"2:{num_rows}", DATA_FORMAT)
-
-    sheet_id = worksheet._properties["sheetId"]
-    requests = []
-
-    # Column widths.
-    default_widths = {0: 200, 1: 350, 2: 200, 3: 200}
-    widths = col_widths or default_widths
-    for col_idx in range(num_cols):
-        width = widths.get(col_idx, 200)
-        requests.append({
-            "updateDimensionProperties": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "dimension": "COLUMNS",
-                    "startIndex": col_idx,
-                    "endIndex": col_idx + 1,
-                },
-                "properties": {"pixelSize": width},
-                "fields": "pixelSize",
-            }
-        })
-
-    # Row heights.
-    requests.append({
-        "updateDimensionProperties": {
-            "range": {
-                "sheetId": sheet_id,
-                "dimension": "ROWS",
-                "startIndex": 0,
-                "endIndex": 1,
-            },
-            "properties": {"pixelSize": 40},
-            "fields": "pixelSize",
-        }
-    })
-    if num_rows > 1:
-        requests.append({
-            "updateDimensionProperties": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "dimension": "ROWS",
-                    "startIndex": 1,
-                    "endIndex": num_rows,
-                },
-                "properties": {"pixelSize": 35},
-                "fields": "pixelSize",
-            }
-        })
-
-    # Freeze header row.
-    requests.append({
-        "updateSheetProperties": {
-            "properties": {
-                "sheetId": sheet_id,
-                "gridProperties": {"frozenRowCount": 1},
-            },
-            "fields": "gridProperties.frozenRowCount",
-        }
-    })
-
-    spreadsheet.batch_update({"requests": requests})
-
-
-def write_pytest_sheet(spreadsheet, title, pytest_results):
-    """Write a pytest results sheet.
-
-    Args:
-        spreadsheet: The gspread Spreadsheet object.
-        title: Sheet title.
-        pytest_results: List of pytest result dicts.
+        sheet_name: Name of the sheet.
 
     Returns:
-        The created worksheet.
+        The gspread Worksheet object.
     """
-    rows = [["Status", "Test File", "Test Class", "Test Name"]]
-    for test in pytest_results:
-        status = STATUS_EMOJIS.get(test["status"], test["status"])
-        rows.append([status, test["file"], test["class"], test["name"]])
+    headers = SHEETS[sheet_name]
 
-    if len(rows) == 1:
-        rows.append(["", "No tests found", "", ""])
+    try:
+        ws = spreadsheet.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(
+            title=sheet_name, rows=1, cols=len(headers)
+        )
+        ws.update(f"A1:{chr(64 + len(headers))}1", [headers])
+        ws.format("1:1", HEADER_FORMAT)
 
-    ws = spreadsheet.add_worksheet(title=title, rows=len(rows), cols=4)
-    ws.update(f"A1:D{len(rows)}", rows)
-    style_sheet(
-        spreadsheet, ws, len(rows), 4,
-        {0: 150, 1: 350, 2: 250, 3: 250},
-    )
+        # Freeze header row.
+        sheet_id = ws._properties["sheetId"]
+        spreadsheet.batch_update({"requests": [{
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": sheet_id,
+                    "gridProperties": {"frozenRowCount": 1},
+                },
+                "fields": "gridProperties.frozenRowCount",
+            }
+        }]})
+
     return ws
 
 
-def write_notebook_sheet(spreadsheet, title, notebook_results):
-    """Write a notebook check results sheet.
+def append_pytest_rows(ws, run_date, run_id, pytest_results):
+    """Append pytest result rows to a worksheet.
 
     Args:
-        spreadsheet: The gspread Spreadsheet object.
-        title: Sheet title.
-        notebook_results: List of notebook result dicts.
-
-    Returns:
-        The created worksheet.
+        ws: The gspread Worksheet object.
+        run_date: Formatted run date string.
+        run_id: GitHub Actions run ID.
+        pytest_results: List of pytest result dicts.
     """
-    rows = [["Status", "Notebook", "Course", "Details"]]
+    if not pytest_results:
+        return
+
+    rows = []
+    for test in pytest_results:
+        status = STATUS_EMOJIS.get(test["status"], test["status"])
+        rows.append([
+            run_date, run_id, status,
+            test["file"], test["class"], test["name"],
+        ])
+
+    ws.append_rows(rows, value_input_option="RAW")
+
+
+def append_notebook_rows(ws, run_date, run_id, notebook_results):
+    """Append notebook check result rows to a worksheet.
+
+    Args:
+        ws: The gspread Worksheet object.
+        run_date: Formatted run date string.
+        run_id: GitHub Actions run ID.
+        notebook_results: List of notebook result dicts.
+    """
+    if not notebook_results:
+        return
+
+    rows = []
     for nb in notebook_results:
         status = STATUS_EMOJIS.get(nb["status"], nb["status"])
         name = nb["notebook"]
-        course = name.split("_lab_")[0].replace("gdm_", "") if "_lab_" in name else ""
-        rows.append([status, name, course, nb.get("details", "")])
+        course = (
+            name.split("_lab_")[0].replace("gdm_", "")
+            if "_lab_" in name else ""
+        )
+        rows.append([
+            run_date, run_id, status,
+            name, course, nb.get("details", ""),
+        ])
 
-    if len(rows) == 1:
-        rows.append(["", "No notebooks checked", "", ""])
-
-    ws = spreadsheet.add_worksheet(title=title, rows=len(rows), cols=4)
-    ws.update(f"A1:D{len(rows)}", rows)
-    style_sheet(
-        spreadsheet, ws, len(rows), 4,
-        {0: 150, 1: 400, 2: 120, 3: 300},
-    )
-    return ws
+    ws.append_rows(rows, value_input_option="RAW")
 
 
-def write_summary_sheet(spreadsheet, results, run_id, run_url):
-    """Write the summary sheet.
+def append_gpu_rows(ws, run_date, run_id, data):
+    """Append GPU test result rows to a worksheet.
 
     Args:
-        spreadsheet: The gspread Spreadsheet object.
-        results: Dict mapping job names to result dicts.
-        run_id: GitHub Actions run ID (or empty).
-        run_url: GitHub Actions run URL (or empty).
-
-    Returns:
-        The created worksheet.
+        ws: The gspread Worksheet object.
+        run_date: Formatted run date string.
+        run_id: GitHub Actions run ID.
+        data: Result dict for the GPU job.
     """
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    rows = []
 
-    rows = [
-        ["Metric", "Value", "Notes"],
-        ["Run Date", now, ""],
-        ["Run ID", str(run_id), run_url],
-        ["Python Version", "3.12.13", "Colab runtime"],
-        ["", "", ""],
-    ]
+    for test in data.get("pytest", []):
+        status = STATUS_EMOJIS.get(test["status"], test["status"])
+        rows.append([
+            run_date, run_id, status,
+            test["name"], "pytest", "",
+        ])
 
-    for job_name, data in results.items():
-        s = data.get("summary", {})
-        rows.append([f"--- {job_name} ---", "", ""])
+    for nb in data.get("notebooks", []):
+        status = STATUS_EMOJIS.get(nb["status"], nb["status"])
+        rows.append([
+            run_date, run_id, status,
+            nb["notebook"], "notebook", nb.get("details", ""),
+        ])
 
-        if s.get("pytest_total", 0) > 0:
-            pytest_status = "✅" if s["pytest_failed"] == 0 else "❌"
-            rows.append([
-                "  Pytest",
-                f"{pytest_status} {s['pytest_passed']}/{s['pytest_total']} passed",
-                f"{s['pytest_failed']} failed" if s["pytest_failed"] else "",
-            ])
-
-        if s.get("notebooks_total", 0) > 0:
-            nb_status = "✅" if s["notebooks_failed"] == 0 else "❌"
-            rows.append([
-                "  Notebooks",
-                f"{nb_status} {s['notebooks_passed']} passed",
-                f"{s['notebooks_failed']} failed, {s['notebooks_skipped']} skipped",
-            ])
-
-    ws = spreadsheet.add_worksheet(title="Summary", rows=len(rows), cols=3)
-    ws.update(f"A1:C{len(rows)}", rows)
-    style_sheet(
-        spreadsheet, ws, len(rows), 3,
-        {0: 250, 1: 300, 2: 300},
-    )
-    return ws
+    if rows:
+        ws.append_rows(rows, value_input_option="RAW")
 
 
-def create_spreadsheet(
-    results: dict[str, dict],
-    folder_id: str,
-    run_id: str = "",
-    run_url: str = "",
-) -> str:
-    """Create a Google Sheets spreadsheet with all test results.
+def append_summary_row(ws, run_date, run_id, run_url, job_name, summary):
+    """Append a summary row for one job.
 
     Args:
-        results: Dict mapping job names to result dicts.
-        folder_id: Google Drive folder ID.
+        ws: The gspread Worksheet object.
+        run_date: Formatted run date string.
         run_id: GitHub Actions run ID.
         run_url: GitHub Actions run URL.
+        job_name: Name of the job.
+        summary: Summary dict with pass/fail counts.
+    """
+    row = [
+        run_date, run_id, run_url, job_name,
+        summary.get("pytest_passed", ""),
+        summary.get("pytest_failed", ""),
+        summary.get("notebooks_passed", ""),
+        summary.get("notebooks_failed", ""),
+        summary.get("notebooks_skipped", ""),
+    ]
+    ws.append_rows([row], value_input_option="RAW")
 
-    Returns:
-        URL of the created spreadsheet.
+
+def write_results(
+    spreadsheet_id: str,
+    results: dict[str, dict],
+    run_id: str = "",
+    run_url: str = "",
+) -> None:
+    """Append all test results to the spreadsheet.
+
+    Args:
+        spreadsheet_id: Google Sheets spreadsheet ID.
+        results: Dict mapping job names to result dicts.
+        run_id: GitHub Actions run ID.
+        run_url: GitHub Actions run URL.
     """
     creds, _ = google.auth.default(scopes=[
         "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
     ])
     gc = gspread.authorize(creds)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-    title = f"Notebook Test Results - {now}"
-    if run_id:
-        title += f" - Run #{run_id}"
+    sh = gc.open_by_key(spreadsheet_id)
+    run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    print(f"Creating spreadsheet: {title}")
-
-    # Create the spreadsheet directly in the target folder.
-    # This uses the folder owner's quota instead of the service account's.
-    drive = build_api("drive", "v3", credentials=creds)
-    file_metadata = {
-        "name": title,
-        "mimeType": "application/vnd.google-apps.spreadsheet",
-        "parents": [folder_id],
+    # Job name to sheet name mapping.
+    job_sheet_map = {
+        "Unit Tests": "Unit Tests",
+        "Notebook Imports": "Notebook Checks",
+        "Smoke Tests": "Smoke Tests",
+        "GPU Tests": "GPU Tests",
     }
-    file = drive.files().create(body=file_metadata, fields="id").execute()
-    sh = gc.open_by_key(file["id"])
 
-    # Write sheets for each job.
-    sheets_created = []
-
+    # Write results for each job.
     for job_name, data in results.items():
-        if data.get("pytest"):
-            ws = write_pytest_sheet(sh, f"{job_name} - Pytest", data["pytest"])
-            sheets_created.append(ws.title)
+        sheet_name = job_sheet_map.get(job_name)
+        if not sheet_name:
+            print(f"  Unknown job: {job_name}, skipping.")
+            continue
 
-        if data.get("notebooks"):
-            ws = write_notebook_sheet(
-                sh, f"{job_name} - Notebooks", data["notebooks"]
-            )
-            sheets_created.append(ws.title)
+        print(f"  Writing {job_name} results...")
 
-    # GPU placeholder if not present.
-    if "GPU Tests" not in results:
-        ws = sh.add_worksheet(title="GPU Tests", rows=3, cols=3)
-        ws.update("A1:C2", [
-            ["Status", "Notebook", "Details"],
-            ["⏸️ DISABLED", "GPU tests not yet enabled", "Pending WIF setup"],
-        ])
-        style_sheet(sh, ws, 2, 3, {0: 150, 1: 300, 2: 300})
+        if sheet_name == "GPU Tests":
+            ws = ensure_sheet(sh, sheet_name)
+            append_gpu_rows(ws, run_date, run_id, data)
+        elif data.get("pytest"):
+            ws = ensure_sheet(sh, sheet_name)
+            append_pytest_rows(ws, run_date, run_id, data["pytest"])
+        if data.get("notebooks") and sheet_name != "GPU Tests":
+            ws = ensure_sheet(sh, "Notebook Checks")
+            append_notebook_rows(ws, run_date, run_id, data["notebooks"])
 
-    # Summary sheet.
-    write_summary_sheet(sh, results, run_id, run_url)
+        # Summary row.
+        summary_ws = ensure_sheet(sh, "Run Summary")
+        append_summary_row(
+            summary_ws, run_date, run_id, run_url,
+            job_name, data.get("summary", {}),
+        )
 
-    # Delete the default empty Sheet1.
-    default_sheet = sh.sheet1
-    if default_sheet.title == "Sheet1" and len(sh.worksheets()) > 1:
-        sh.del_worksheet(default_sheet)
-
-    print(f"Spreadsheet URL: {sh.url}")
-    return sh.url
+    print("  Done.")
 
 
 def main() -> None:
     """Entry point."""
     parser = argparse.ArgumentParser(
-        description="Write test results to Google Sheets."
+        description="Append test results to Google Sheets."
     )
     parser.add_argument(
         "--results-dir",
@@ -360,10 +314,10 @@ def main() -> None:
         help="Directory containing result JSON files.",
     )
     parser.add_argument(
-        "--folder-id",
+        "--spreadsheet-id",
         type=str,
         required=True,
-        help="Google Drive folder ID.",
+        help="Google Sheets spreadsheet ID.",
     )
     parser.add_argument(
         "--run-id",
@@ -389,10 +343,9 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Found results for: {', '.join(results.keys())}")
-    url = create_spreadsheet(
-        results, args.folder_id, args.run_id, args.run_url
+    write_results(
+        args.spreadsheet_id, results, args.run_id, args.run_url
     )
-    print(f"Done: {url}")
 
 
 if __name__ == "__main__":

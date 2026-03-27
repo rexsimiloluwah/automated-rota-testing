@@ -312,12 +312,10 @@ jobs:
 
       - name: Write to Google Sheets
         if: env.WRITE_SHEETS == 'true'
-        env:
-          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
         run: |
           python scripts/write_to_sheets.py \
             --results-dir all-results/ \
-            --folder-id "$GOOGLE_DRIVE_FOLDER_ID" \
+            --spreadsheet-id "${{ secrets.GOOGLE_SPREADSHEET_ID }}" \
             --run-id "${{ github.run_id }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
