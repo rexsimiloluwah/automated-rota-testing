@@ -18,6 +18,7 @@ import ast
 import importlib
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -165,8 +166,13 @@ def _run_pip_installs(commands: list[str]) -> None:
         commands: List of pip install argument strings.
     """
     for args in commands:
-        cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + args.split()
+        cmd = (
+            [sys.executable, "-m", "pip", "install", "--quiet"]
+            + shlex.split(args)
+        )
         subprocess.run(cmd, capture_output=True)
+    # Ensure Python's import machinery sees newly installed packages.
+    importlib.invalidate_caches()
 
 
 def check_imports(notebook_path: Path) -> list[str]:
