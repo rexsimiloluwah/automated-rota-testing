@@ -171,8 +171,32 @@ def _run_pip_installs(commands: list[str]) -> None:
             + shlex.split(args)
         )
         subprocess.run(cmd, capture_output=True)
-    # Ensure Python's import machinery sees newly installed packages.
-    importlib.invalidate_caches()
+
+
+def _check_import_subprocess(module: str) -> tuple[bool, str]:
+    """Check a single import in a subprocess.
+
+    Uses a fresh Python process so that newly pip-installed packages
+    are picked up without interference from ``sys.modules`` in the
+    parent process.
+
+    Args:
+        module: Top-level module name to import.
+
+    Returns:
+        Tuple of (success, error_message).
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {module}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return True, ""
+    # Extract the last line of stderr for a concise error message.
+    stderr_lines = result.stderr.strip().splitlines()
+    error_line = stderr_lines[-1] if stderr_lines else "unknown error"
+    return False, error_line
 
 
 def check_imports(notebook_path: Path) -> list[str]:
@@ -180,6 +204,8 @@ def check_imports(notebook_path: Path) -> list[str]:
 
     Runs any ``!pip install`` commands found in the notebook first so
     that the environment matches what the notebook expects at runtime.
+    When pip installs are present, imports are verified in a subprocess
+    to avoid stale ``sys.modules`` entries from the parent process.
 
     Args:
         notebook_path: Path to the ``.ipynb`` file.
@@ -189,7 +215,8 @@ def check_imports(notebook_path: Path) -> list[str]:
     """
     # Honour in-notebook pip installs before checking imports.
     pip_commands = _extract_pip_installs(notebook_path)
-    if pip_commands:
+    has_pip_installs = bool(pip_commands)
+    if has_pip_installs:
         _run_pip_installs(pip_commands)
 
     errors = []
@@ -202,17 +229,25 @@ def check_imports(notebook_path: Path) -> list[str]:
             if mod in seen_modules:
                 continue
             seen_modules.add(mod)
-            try:
-                importlib.import_module(mod)
-            except ImportError:
-                errors.append(
-                    f"  Cell {cell_idx}: ImportError: cannot import '{mod}'"
-                )
-            except Exception as exc:
-                errors.append(
-                    f"  Cell {cell_idx}: {type(exc).__name__} importing "
-                    f"'{mod}': {exc}"
-                )
+            if has_pip_installs:
+                ok, err_msg = _check_import_subprocess(mod)
+                if not ok:
+                    errors.append(
+                        f"  Cell {cell_idx}: {err_msg}"
+                    )
+            else:
+                try:
+                    importlib.import_module(mod)
+                except ImportError:
+                    errors.append(
+                        f"  Cell {cell_idx}: ImportError: "
+                        f"cannot import '{mod}'"
+                    )
+                except Exception as exc:
+                    errors.append(
+                        f"  Cell {cell_idx}: {type(exc).__name__} "
+                        f"importing '{mod}': {exc}"
+                    )
     return errors
 
 
