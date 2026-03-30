@@ -77,7 +77,7 @@ def _is_placeholder_cell(source: str) -> bool:
         syntax errors by design.
     """
     return bool(
-        re.search(r"=\s*\.\.\.", source)
+        re.search(r"(?<![!=<>])=\s*\.\.\.", source)
         or re.search(r"#\s*Add your code here", source)
         or re.search(r"#\s*Your code here", source, re.IGNORECASE)
         or source.strip() == "..."

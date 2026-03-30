@@ -256,7 +256,7 @@ def _find_activity_cells(
             continue
 
         is_placeholder = (
-            re.search(r"=\s*\.\.\.", source)
+            re.search(r"(?<![!=<>])=\s*\.\.\.", source)
             or re.search(r"#\s*Add your code here", source)
             or source.strip() == "..."
         )

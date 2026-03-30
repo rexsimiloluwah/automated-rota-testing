@@ -138,12 +138,15 @@ flowchart TD
 **`test_utilities.py`** - tests pure functions in `ai_foundations`:
 - `bytes_to_gb()`, `format_flops()`, `format_large_number()`, `format_qa()`
 
-**`test_feedback_solutions.py`** - passes reference solution code through the upstream feedback validation functions:
+**`test_feedback_solutions.py`** - dynamically extracts solutions from notebooks and validates them through upstream feedback functions:
 - Course 1: n-gram generation, counting, model building, vocabulary
 - Course 2: HTML cleaning, Unicode cleaning
-- Course 7: FLOPs estimation, GPU memory calculations
+- Course 3: MLP design
+- Course 4: attention mask computation, transformer parameter counting (7 tests)
+- Course 5: QA turn-based formatting
+- Course 7: FLOPs estimation, GPU memory calculations (5 tests)
 
-If upstream changes break a solution or a feedback validator, these tests catch it.
+If upstream changes break a solution or a feedback validator, these tests catch it automatically.
 
 ### How feedback solution testing works
 
@@ -151,29 +154,27 @@ The upstream notebooks have a pattern: each coding activity has placeholder code
 
 These validation functions **cannot be run directly with pytest** because they require student code as arguments. Our approach:
 
-1. **Extract** the reference solution functions from the notebooks' Solutions sections
-2. **Hardcode** them in `tests/test_feedback_solutions.py`
-3. **Pass** them into the upstream validation functions as if they were student submissions
+1. **Extract** reference solutions dynamically from each notebook's `## Solutions` section at test time using `inject_solutions.py`
+2. **Execute** all non-placeholder code cells first (to pick up helper functions, constants, and imports that solutions depend on)
+3. **Compile** solution cells in a shared namespace so interdependent functions work
+4. **Pass** them into the upstream validation functions as if they were student submissions
 
 ```python
-# In the notebook, students write:
-def clean_html(text):
-    text = re.sub(r"<.*?>", "", text)  # Student fills this in
-    ...
+# At test time, _extract_solutions() opens the notebook JSON, executes
+# helper cells and solution cells, and returns a namespace dict:
+ns = _extract_solutions("course_2/gdm_lab_2_1_preprocess_data.ipynb")
 
-# The notebook calls the validator:
-preprocess.test_clean_html(clean_html)  # Checks student's work
-
-# Our test does the same thing, but with the reference solution:
+# Then the test passes the extracted function to the upstream validator:
 def test_clean_html(self):
     from ai_foundations.feedback.course_2 import preprocess
-    preprocess.test_clean_html(clean_html)  # clean_html = our copy of the solution
+    preprocess.test_clean_html(self.ns["clean_html"])
 ```
 
 This validates that:
 - The solution code is correct (passes the validator)
 - The validator logic works (doesn't reject correct solutions)
 - The package API hasn't changed (function signatures still match)
+- Solutions stay in sync with upstream (no stale hardcoded copies)
 
 ### GPU detection
 
@@ -349,8 +350,8 @@ automated-rota-testing/
 │   ├── gce_gpu_test.sh                 # Local: ephemeral GCE GPU instance lifecycle
 │   ├── gce_startup.sh                  # Startup script for GCE GPU instance
 │   ├── gce_install_deps.sh             # Install deps inside Colab Docker container
-│   ├── inject_solutions.py             # Replace placeholders with solutions (future)
-│   └── run_notebook.py                 # Execute notebook via papermill (future)
+│   ├── inject_solutions.py             # Extract and inject solutions from notebook cells
+│   └── run_notebook.py                 # Execute notebook via papermill (unused)
 ├── Dockerfile                          # Colab CPU image for CI and local testing
 ├── Dockerfile.gpu                      # Colab GPU image for GPU testing
 ├── docker-compose.yml                  # Local Docker testing commands
@@ -371,8 +372,9 @@ automated-rota-testing/
 ## Potential Failure Modes
 
 - [x] **Upstream package changes** → feedback validators or utility functions change signatures. Caught by `test_feedback_solutions.py` and `test_utilities.py`.
-- [x] **Upstream solution code changes** → reference solutions no longer pass validators. Caught by `test_feedback_solutions.py`.
+- [x] **Upstream solution code changes** → reference solutions no longer pass validators. Caught by `test_feedback_solutions.py` which dynamically extracts solutions from notebooks at test time.
 - [x] **Broken imports in notebooks** → upstream adds/renames a dependency. Caught by `check_notebook.py` import validation.
+- [x] **Notebook pip install version conflicts** → notebooks pin specific package versions (e.g., `keras==3.13.2 keras_hub==0.26.0`) that conflict with the base environment. Resolved by `check_notebook.py` extracting and running `!pip install` lines before checking imports, using subprocess-based import verification to avoid stale `sys.modules` caching.
 - [x] **Syntax errors in notebooks** → upstream introduces invalid Python. Caught by `check_notebook.py` syntax validation.
 - [x] **Python version incompatibility** → code works on one Python version but not another (e.g., f-string backslash in 3.10 vs 3.12). Caught by running in the exact Colab Docker image.
 - [x] **Package version mismatch** → tests pass locally but fail on Colab due to different package versions. Resolved by using the official Colab Docker image everywhere.
