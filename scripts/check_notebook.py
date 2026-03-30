@@ -18,6 +18,7 @@ import ast
 import importlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -133,8 +134,46 @@ def _extract_imports(source: str) -> list[str]:
     return modules
 
 
+def _extract_pip_installs(notebook_path: Path) -> list[str]:
+    """Extract ``!pip install`` commands from notebook code cells.
+
+    Args:
+        notebook_path: Path to the ``.ipynb`` file.
+
+    Returns:
+        List of pip install argument strings in cell order.
+    """
+    with open(notebook_path, "r", encoding="utf-8") as fh:
+        nb = json.load(fh)
+
+    commands = []
+    for cell in nb.get("cells", []):
+        if cell.get("cell_type") != "code":
+            continue
+        for line in cell.get("source", []):
+            stripped = line.strip()
+            match = re.match(r"^!pip\s+install\s+(.+)", stripped)
+            if match:
+                commands.append(match.group(1))
+    return commands
+
+
+def _run_pip_installs(commands: list[str]) -> None:
+    """Run pip install commands so the environment matches the notebook.
+
+    Args:
+        commands: List of pip install argument strings.
+    """
+    for args in commands:
+        cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + args.split()
+        subprocess.run(cmd, capture_output=True)
+
+
 def check_imports(notebook_path: Path) -> list[str]:
     """Check that all imported modules can be resolved.
+
+    Runs any ``!pip install`` commands found in the notebook first so
+    that the environment matches what the notebook expects at runtime.
 
     Args:
         notebook_path: Path to the ``.ipynb`` file.
@@ -142,6 +181,11 @@ def check_imports(notebook_path: Path) -> list[str]:
     Returns:
         List of error messages. Empty if all imports resolve.
     """
+    # Honour in-notebook pip installs before checking imports.
+    pip_commands = _extract_pip_installs(notebook_path)
+    if pip_commands:
+        _run_pip_installs(pip_commands)
+
     errors = []
     cells = _extract_code_cells(notebook_path)
 
