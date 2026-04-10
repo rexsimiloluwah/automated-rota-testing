@@ -23,6 +23,19 @@ services:
         python scripts/check_notebook.py --all --skip-gpu
       "
 
+  # Run CPU notebooks end-to-end with solutions injected.
+  execute:
+    build: .
+    environment:
+      - CUDA_VISIBLE_DEVICES=
+    volumes:
+      - ./results:/workspace/results
+    command: >
+      bash -c "
+        python scripts/generate_manifest.py &&
+        python scripts/run_all_notebooks.py --repo-dir ai-foundations --output-dir /workspace/results/notebooks --mode cpu --strip-installs --summary /workspace/results/execution_summary.md
+      "
+
   # Drop into a shell for debugging.
   shell:
     build: .

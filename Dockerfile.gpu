@@ -6,7 +6,9 @@ ENTRYPOINT []
 
 WORKDIR /workspace
 
-# Clone upstream repo.
+# Clone upstream repo. The CACHEBUST arg ensures Docker always re-clones
+# instead of serving a stale cached layer.
+ARG CACHEBUST=1
 RUN git clone --depth 1 --branch main \
         https://github.com/google-deepmind/ai-foundations.git
 
@@ -14,7 +16,7 @@ RUN git clone --depth 1 --branch main \
 RUN pip install --no-cache-dir -e ai-foundations
 
 # Install testing tools (not in Colab by default).
-RUN pip install --no-cache-dir pytest pyyaml
+RUN pip install --no-cache-dir pytest pyyaml papermill ipykernel
 
 # Copy test infrastructure.
 COPY scripts/ scripts/

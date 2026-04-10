@@ -132,6 +132,40 @@ jobs:
           name: notebook-smoke-results
           path: results/
 
+  # CPU notebook execution — runs all CPU notebooks end-to-end with
+  # solutions injected. Only on nightly schedule and manual dispatch.
+  notebook-execution:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Colab test image
+        run: docker build -t nb-test .
+
+      - name: Execute CPU notebooks
+        run: |
+          mkdir -p results
+          docker run --rm -v "$PWD/results:/workspace/results" nb-test bash -c "
+            python scripts/generate_manifest.py;
+            python scripts/run_all_notebooks.py \
+              --repo-dir ai-foundations \
+              --output-dir /workspace/results/notebooks \
+              --mode cpu \
+              --strip-installs \
+              --summary /workspace/results/execution_summary.md
+          "
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notebook-execution-results
+          path: results/
+
   # GPU tests — runs on ephemeral GCE T4 instance with Colab GPU image.
   gpu-tests:
     runs-on: ubuntu-latest
@@ -223,6 +257,13 @@ jobs:
                   --overrides notebook_overrides.yml; \
                 python scripts/check_notebook.py --all --repo-dir ai-foundations \
                   --summary /workspace/results/notebook_summary.md; \
+                python scripts/run_all_notebooks.py \
+                  --repo-dir ai-foundations \
+                  --overrides notebook_overrides.yml \
+                  --output-dir /workspace/results/notebooks \
+                  --mode gpu \
+                  --strip-installs \
+                  --summary /workspace/results/execution_summary.md; \
                 python scripts/write_results.py \
                   --pytest-output /workspace/results/pytest_output.txt \
                   --notebook-summary /workspace/results/notebook_summary.md \
@@ -245,6 +286,10 @@ jobs:
             --strict-host-key-checking=no \
             "$INSTANCE_NAME":/workspace/results/notebook_summary.md \
             results/notebook_summary.md 2>/dev/null || true
+          gcloud compute scp --zone="$GCE_ZONE" --quiet \
+            --strict-host-key-checking=no \
+            "$INSTANCE_NAME":/workspace/results/execution_summary.md \
+            results/execution_summary.md 2>/dev/null || true
 
       - name: Upload results
         if: always()
@@ -263,7 +308,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: always()
-    needs: [unit-tests, notebook-imports, notebook-smoke, gpu-tests]
+    needs: [unit-tests, notebook-imports, notebook-smoke, notebook-execution, gpu-tests]
 
     steps:
       - name: Checkout
@@ -297,6 +342,12 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           cat all-results/notebook-smoke-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
+          # Notebook execution results.
+          if [ -d "all-results/notebook-execution-results" ]; then
+            cat all-results/notebook-execution-results/execution_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           # GPU test results.
           echo "## GPU Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -306,6 +357,8 @@ jobs:
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             cat all-results/gpu-test-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat all-results/gpu-test-results/execution_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
           else
             echo "GPU tests not enabled for this run." >> "$GITHUB_STEP_SUMMARY"
           fi

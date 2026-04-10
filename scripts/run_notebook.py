@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -53,12 +54,51 @@ def _strip_install_lines(notebook_path: Path) -> None:
             fh.write("\n")
 
 
+def _inject_env_cell(
+    notebook_path: Path, var_name: str, var_value: str
+) -> None:
+    """Insert an environment variable cell at the start of a notebook.
+
+    Args:
+        notebook_path: Path to the ``.ipynb`` file (modified in-place).
+        var_name: Environment variable name.
+        var_value: Environment variable value.
+    """
+    with open(notebook_path, "r", encoding="utf-8") as fh:
+        nb = json.load(fh)
+
+    env_cell = {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "import os\n",
+            f'os.environ["{var_name}"] = "{var_value}"\n',
+        ],
+    }
+
+    # Insert before the first code cell.
+    cells = nb.get("cells", [])
+    insert_idx = 0
+    for i, cell in enumerate(cells):
+        if cell.get("cell_type") == "code":
+            insert_idx = i
+            break
+    cells.insert(insert_idx, env_cell)
+
+    with open(notebook_path, "w", encoding="utf-8") as fh:
+        json.dump(nb, fh, indent=1, ensure_ascii=False)
+        fh.write("\n")
+
+
 def run_notebook(
     notebook_path: Path,
     output_dir: Path,
     timeout: int,
     strip_installs: bool,
-) -> bool:
+    cwd: Path | None = None,
+) -> tuple[bool, str]:
     """Execute a notebook via papermill.
 
     Args:
@@ -66,15 +106,27 @@ def run_notebook(
         output_dir: Directory for the executed notebook output.
         timeout: Per-cell execution timeout in seconds.
         strip_installs: If True, remove pip install cells before running.
+        cwd: Working directory for the kernel. Defaults to the
+            notebook's parent directory.
 
     Returns:
-        True if execution succeeded, False otherwise.
+        Tuple of (success, error_message). Error message is empty on
+        success.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / notebook_path.name
 
     if strip_installs:
         _strip_install_lines(notebook_path)
+
+    # If CUDA_VISIBLE_DEVICES is set (e.g. CPU mode), inject it into
+    # the notebook as the first code cell so the kernel picks it up
+    # before any imports.
+    cuda_env = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_env is not None:
+        _inject_env_cell(notebook_path, "CUDA_VISIBLE_DEVICES", cuda_env)
+
+    kernel_cwd = str(cwd) if cwd else str(notebook_path.parent)
 
     print(f"==> Running: {notebook_path.name}")
     start = time.time()
@@ -84,24 +136,26 @@ def run_notebook(
             str(notebook_path),
             str(output_path),
             kernel_name="python3",
-            cwd=str(notebook_path.parent),
+            cwd=kernel_cwd,
             request_save_on_cell_execute=True,
             execution_timeout=timeout,
         )
         elapsed = time.time() - start
         print(f"    PASSED ({elapsed:.1f}s)")
-        return True
+        return True, ""
 
     except pm.PapermillExecutionError as exc:
         elapsed = time.time() - start
+        error_msg = f"Cell {exc.cell_index}: {exc.ename}: {exc.evalue}"
         print(f"    FAILED ({elapsed:.1f}s)")
-        print(f"    Cell {exc.cell_index}: {exc.ename}: {exc.evalue}")
-        return False
+        print(f"    {error_msg}")
+        return False, error_msg
 
     except Exception as exc:
         elapsed = time.time() - start
-        print(f"    ERROR ({elapsed:.1f}s): {exc}")
-        return False
+        error_msg = str(exc)
+        print(f"    ERROR ({elapsed:.1f}s): {error_msg}")
+        return False, error_msg
 
 
 def main() -> None:
@@ -137,7 +191,7 @@ def main() -> None:
         print(f"Error: '{args.notebook}' not found.", file=sys.stderr)
         sys.exit(1)
 
-    success = run_notebook(
+    success, _ = run_notebook(
         args.notebook,
         args.output_dir,
         args.timeout,

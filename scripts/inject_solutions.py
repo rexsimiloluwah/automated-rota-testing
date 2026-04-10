@@ -56,8 +56,8 @@ def _extract_function_name(source: str) -> str | None:
 def _extract_activity_number(source: str) -> int | None:
     """Extract the activity number from a markdown heading.
 
-    Matches patterns like ``### Coding Activity 1`` or
-    ``### Activity 2``.
+    Matches patterns like ``## Coding Activity 1``,
+    ``### Activity 2``, etc.
 
     Args:
         source: The joined source of a markdown cell.
@@ -66,7 +66,7 @@ def _extract_activity_number(source: str) -> int | None:
         The activity number, or None if not found.
     """
     match = re.search(
-        r"###\s+(?:Coding\s+)?Activity\s+(\d+)", source, re.IGNORECASE
+        r"#{2,3}\s+(?:Coding\s+)?Activity\s+(\d+)", source, re.IGNORECASE
     )
     if match:
         return int(match.group(1))
@@ -154,6 +154,83 @@ def _extract_solution_function(source: str) -> str | None:
         return None
 
     return "".join(lines[def_start:])
+
+
+def _replace_placeholder_region(
+    cell_source: str, solution_source: str
+) -> str:
+    """Replace the placeholder region in a cell with solution code.
+
+    Finds the first placeholder marker (``# Add your code``,
+    ``= ...``, ``= []``, etc.) and replaces from that line through
+    any subsequent blank or placeholder lines with the solution code.
+    Code before and after the placeholder region is preserved.
+
+    If no clear placeholder marker is found, the entire cell is
+    replaced as a fallback.
+
+    Args:
+        cell_source: The original cell source code.
+        solution_source: The solution source code.
+
+    Returns:
+        The modified cell source.
+    """
+    placeholder_patterns = [
+        re.compile(r"#\s*Add your code", re.IGNORECASE),
+        re.compile(r"#\s*Your code here", re.IGNORECASE),
+        re.compile(r"#\s*Change code here", re.IGNORECASE),
+        re.compile(r"(?<![!=<>])=\s*\.\.\."),
+        re.compile(r"(?<![!=<>])=\s*\[\]"),
+        re.compile(r"(?<![!=<>])=\s*$"),
+        re.compile(r"(?<![!=<>])=\s*#"),
+    ]
+
+    lines = cell_source.splitlines(keepends=True)
+    placeholder_start = None
+
+    for i, line in enumerate(lines):
+        for pattern in placeholder_patterns:
+            if pattern.search(line):
+                placeholder_start = i
+                break
+        if placeholder_start is not None:
+            break
+
+    if placeholder_start is None:
+        # No marker found — fall back to full replacement.
+        return solution_source
+
+    # Keep everything before the placeholder line.
+    before = lines[:placeholder_start]
+
+    # Find where the placeholder region ends: skip blank lines and
+    # subsequent placeholder lines after the marker.
+    placeholder_end = placeholder_start + 1
+    while placeholder_end < len(lines):
+        stripped = lines[placeholder_end].strip()
+        if stripped == "":
+            placeholder_end += 1
+            continue
+        # Check if this line is also a placeholder.
+        is_placeholder_line = False
+        for pattern in placeholder_patterns:
+            if pattern.search(lines[placeholder_end]):
+                is_placeholder_line = True
+                break
+        if is_placeholder_line:
+            placeholder_end += 1
+            continue
+        break
+
+    # Keep everything after the placeholder region.
+    after = lines[placeholder_end:]
+
+    # Ensure solution ends with newline.
+    if not solution_source.endswith("\n"):
+        solution_source += "\n"
+
+    return "".join(before) + solution_source + "".join(after)
 
 
 def _replace_function_in_cell(
@@ -257,7 +334,13 @@ def _find_activity_cells(
 
         is_placeholder = (
             re.search(r"(?<![!=<>])=\s*\.\.\.", source)
-            or re.search(r"#\s*Add your code here", source)
+            or re.search(r"#\s*Add your code here", source, re.IGNORECASE)
+            or re.search(r"#\s*Add your code", source, re.IGNORECASE)
+            or re.search(r"#\s*Your code here", source, re.IGNORECASE)
+            or re.search(r"#\s*Change code here", source, re.IGNORECASE)
+            or re.search(r"(?<![!=<>])=\s*$", source, re.MULTILINE)
+            or re.search(r"(?<![!=<>])=\s*#", source)
+            or re.search(r"(?<![!=<>])=\s*\[\]", source)
             or source.strip() == "..."
         )
         if not is_placeholder:
@@ -366,8 +449,12 @@ def inject_solutions(notebook_path: Path) -> dict:
                 replacements += 1
                 continue
 
-        # Otherwise replace the entire cell (non-function activities).
-        cells[idx]["source"] = _source_to_lines(solution_source)
+        # For non-function activities, try to preserve surrounding code
+        # by replacing only the placeholder region.
+        new_source = _replace_placeholder_region(
+            cell_source, solution_source
+        )
+        cells[idx]["source"] = _source_to_lines(new_source)
         replacements += 1
 
     nb["cells"] = cells

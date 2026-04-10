@@ -14,6 +14,6 @@ echo "Installing ai_foundations..."
 pip install --no-cache-dir -e ai-foundations
 
 echo "Installing testing tools..."
-pip install --no-cache-dir pytest pyyaml
+pip install --no-cache-dir pytest pyyaml papermill ipykernel
 
 echo "Dependencies installed."

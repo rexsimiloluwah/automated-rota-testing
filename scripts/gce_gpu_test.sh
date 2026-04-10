@@ -3,10 +3,11 @@
 # official Colab Docker image, tear down.
 #
 # Usage:
-#   ./scripts/gce_gpu_test.sh [--check-only] [--keep]
+#   ./scripts/gce_gpu_test.sh [--check-only] [--execute] [--keep]
 #
 # Options:
 #   --check-only   Run syntax/import checks only (no pytest)
+#   --execute      Also run notebooks end-to-end with solutions injected
 #   --keep         Don't delete the instance after tests (for debugging)
 #
 # Prerequisites:
@@ -50,11 +51,13 @@ SCP_OPTS=(
 
 # Parse arguments
 CHECK_ONLY=false
+EXECUTE_NOTEBOOKS=false
 KEEP_INSTANCE=false
 
 for arg in "$@"; do
     case "$arg" in
         --check-only) CHECK_ONLY=true ;;
+        --execute) EXECUTE_NOTEBOOKS=true ;;
         --keep) KEEP_INSTANCE=true ;;
         *) echo "Unknown argument: $arg"; exit 1 ;;
     esac
@@ -217,6 +220,19 @@ echo ""
 
 TEST_EXIT_CODE=0
 
+# Build the notebook execution step (if requested).
+EXECUTE_CMD=""
+if [ "$EXECUTE_NOTEBOOKS" = true ]; then
+    EXECUTE_CMD=" && \
+        python scripts/run_all_notebooks.py \
+            --repo-dir ai-foundations \
+            --overrides notebook_overrides.yml \
+            --output-dir /workspace/results/notebooks \
+            --mode gpu \
+            --strip-installs \
+            --summary /workspace/results/execution_summary.md"
+fi
+
 # Build the full command: install deps, then run tests.
 if [ "$CHECK_ONLY" = true ]; then
     FULL_CMD="bash /workspace/scripts/gce_install_deps.sh && \
@@ -224,7 +240,7 @@ if [ "$CHECK_ONLY" = true ]; then
         python scripts/generate_manifest.py \
             --repo-dir ai-foundations \
             --overrides notebook_overrides.yml && \
-        python scripts/check_notebook.py --all --repo-dir ai-foundations"
+        python scripts/check_notebook.py --all --repo-dir ai-foundations${EXECUTE_CMD}"
 else
     FULL_CMD="bash /workspace/scripts/gce_install_deps.sh && \
         cd /workspace && \
@@ -232,7 +248,7 @@ else
             --repo-dir ai-foundations \
             --overrides notebook_overrides.yml && \
         python scripts/check_notebook.py --all --repo-dir ai-foundations && \
-        pytest tests/ -v --import-mode=importlib --tb=short"
+        pytest tests/ -v --import-mode=importlib --tb=short${EXECUTE_CMD}"
 fi
 
 gcloud compute ssh "${INSTANCE_NAME}" --zone="${ZONE}" --quiet \
@@ -260,6 +276,14 @@ gcloud compute scp --recurse --zone="${ZONE}" --quiet \
     "${INSTANCE_NAME}:/workspace/startup.log" \
     "${RESULTS_DIR}/" \
     2>/dev/null || echo "    Warning: could not copy startup log."
+
+if [ "$EXECUTE_NOTEBOOKS" = true ]; then
+    gcloud compute scp --recurse --zone="${ZONE}" --quiet \
+        "${SCP_OPTS[@]}" \
+        "${INSTANCE_NAME}:/workspace/results/" \
+        "${RESULTS_DIR}/" \
+        2>/dev/null || echo "    Warning: could not copy execution results."
+fi
 
 # Step 8: Report
 echo ""

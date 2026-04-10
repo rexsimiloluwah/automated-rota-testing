@@ -36,7 +36,7 @@ _GPU_CODE_PATTERNS: list[re.Pattern] = [
 ]
 
 # Default timeout in seconds for notebook execution.
-_DEFAULT_TIMEOUT: int = 600
+_DEFAULT_TIMEOUT: int = 1200
 
 
 def _detect_gpu(notebook_path: Path) -> bool:
