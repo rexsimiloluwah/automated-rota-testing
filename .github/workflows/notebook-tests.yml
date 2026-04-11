@@ -19,7 +19,7 @@ env:
   GCE_ZONE: us-central1-a
 
 jobs:
-  unit-tests:
+  cpu-unit-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -55,7 +55,7 @@ jobs:
           name: unit-test-results
           path: results/
 
-  notebook-imports:
+  cpu-notebook-import-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -92,7 +92,7 @@ jobs:
           name: notebook-import-results
           path: results/
 
-  notebook-smoke:
+  cpu-smoke-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -134,7 +134,7 @@ jobs:
 
   # CPU notebook execution — runs all CPU notebooks end-to-end with
   # solutions injected. Only on nightly schedule and manual dispatch.
-  notebook-execution:
+  cpu-full-notebook-execution:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -166,27 +166,27 @@ jobs:
           name: notebook-execution-results
           path: results/
 
-  # GPU tests — runs on ephemeral GCE T4 instance with Colab GPU image.
-  gpu-tests:
+  # GPU: pytest + syntax/import checks on GCE T4. Runs on every push/PR.
+  gpu-notebook-import-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-  
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-  
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-  
+
       - name: Set up gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
-  
+
       - name: Set instance name
         run: echo "INSTANCE_NAME=nb-gpu-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
-  
+
       - name: Create GCE instance
         run: |
           gcloud compute instances create "$INSTANCE_NAME" \
@@ -205,7 +205,7 @@ jobs:
             --scopes=cloud-platform \
             --tags=allow-ssh \
             --quiet
-  
+
       - name: Wait for SSH
         run: |
           for i in $(seq 1 12); do
@@ -218,7 +218,7 @@ jobs:
             echo "Waiting for SSH... ($((i * 10))s)"; sleep 10
           done
           echo "Error: SSH not available after 120s."; exit 1
-  
+
       - name: Wait for startup script
         run: |
           for i in $(seq 1 45); do
@@ -232,14 +232,14 @@ jobs:
             echo "Waiting for startup... ($((i * 20))s)"; sleep 20
           done
           echo "Error: startup did not complete within 900s."; exit 1
-  
+
       - name: Copy project files
         run: |
           gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
             --strict-host-key-checking=no \
             scripts tests pyproject.toml notebook_overrides.yml \
             "$INSTANCE_NAME":/workspace/
-  
+
       - name: Install dependencies and run tests
         run: |
           gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
@@ -257,19 +257,12 @@ jobs:
                   --overrides notebook_overrides.yml; \
                 python scripts/check_notebook.py --all --repo-dir ai-foundations \
                   --summary /workspace/results/notebook_summary.md; \
-                python scripts/run_all_notebooks.py \
-                  --repo-dir ai-foundations \
-                  --overrides notebook_overrides.yml \
-                  --output-dir /workspace/results/notebooks \
-                  --mode gpu \
-                  --strip-installs \
-                  --summary /workspace/results/execution_summary.md; \
                 python scripts/write_results.py \
                   --pytest-output /workspace/results/pytest_output.txt \
                   --notebook-summary /workspace/results/notebook_summary.md \
                   --output /workspace/results/results.json \
                   --job-name \"GPU Tests\"'"
-  
+
       - name: Copy results back
         if: always()
         run: |
@@ -286,6 +279,121 @@ jobs:
             --strict-host-key-checking=no \
             "$INSTANCE_NAME":/workspace/results/notebook_summary.md \
             results/notebook_summary.md 2>/dev/null || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-test-results
+          path: results/
+
+      - name: Delete GCE instance
+        if: always()
+        run: |
+          gcloud compute instances delete "$INSTANCE_NAME" \
+            --zone="$GCE_ZONE" --quiet 2>/dev/null || true
+
+  # GPU notebook execution — full end-to-end execution on GCE T4.
+  # Only on nightly schedule and manual dispatch.
+  gpu-full-notebook-execution:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set instance name
+        run: echo "INSTANCE_NAME=nb-gpu-exec-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+
+      - name: Create GCE instance
+        run: |
+          gcloud compute instances create "$INSTANCE_NAME" \
+            --zone="$GCE_ZONE" \
+            --machine-type=n1-standard-4 \
+            --accelerator=type=nvidia-tesla-t4,count=1 \
+            --maintenance-policy=TERMINATE \
+            --image-family=pytorch-2-7-cu128-ubuntu-2204-nvidia-570 \
+            --image-project=deeplearning-platform-release \
+            --boot-disk-size=100GB \
+            --boot-disk-type=pd-ssd \
+            --network=similoluwa-vpc \
+            --subnet=similoluwa-vpc \
+            --metadata-from-file=startup-script=scripts/gce_startup.sh \
+            --metadata=install-nvidia-driver=True \
+            --scopes=cloud-platform \
+            --tags=allow-ssh \
+            --quiet
+
+      - name: Wait for SSH
+        run: |
+          for i in $(seq 1 12); do
+            if gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+              --ssh-flag="-o StrictHostKeyChecking=no" \
+              --ssh-flag="-o ConnectTimeout=10" \
+              --command="echo SSH_OK" 2>/dev/null | grep -q "SSH_OK"; then
+              echo "SSH available."; exit 0
+            fi
+            echo "Waiting for SSH... ($((i * 10))s)"; sleep 10
+          done
+          echo "Error: SSH not available after 120s."; exit 1
+
+      - name: Wait for startup script
+        run: |
+          for i in $(seq 1 45); do
+            if gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+              --ssh-flag="-o StrictHostKeyChecking=no" \
+              --ssh-flag="-o ConnectTimeout=10" \
+              --command="test -f /workspace/.ready && echo READY" \
+              2>/dev/null | grep -q "READY"; then
+              echo "Instance is ready."; exit 0
+            fi
+            echo "Waiting for startup... ($((i * 20))s)"; sleep 20
+          done
+          echo "Error: startup did not complete within 900s."; exit 1
+
+      - name: Copy project files
+        run: |
+          gcloud compute scp --recurse --zone="$GCE_ZONE" --quiet \
+            --strict-host-key-checking=no \
+            scripts tests pyproject.toml notebook_overrides.yml \
+            "$INSTANCE_NAME":/workspace/
+
+      - name: Execute GPU notebooks
+        run: |
+          gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+            --ssh-flag="-o StrictHostKeyChecking=no" \
+            --command="sudo docker run --rm --gpus=all \
+              --entrypoint '' \
+              -v /workspace:/workspace \
+              $COLAB_GPU_IMAGE \
+              bash -c 'bash /workspace/scripts/gce_install_deps.sh && \
+                cd /workspace && mkdir -p results && \
+                python scripts/generate_manifest.py \
+                  --repo-dir ai-foundations \
+                  --overrides notebook_overrides.yml; \
+                python scripts/run_all_notebooks.py \
+                  --repo-dir ai-foundations \
+                  --overrides notebook_overrides.yml \
+                  --output-dir /workspace/results/notebooks \
+                  --mode gpu \
+                  --strip-installs \
+                  --summary /workspace/results/execution_summary.md'"
+
+      - name: Copy results back
+        if: always()
+        run: |
+          mkdir -p results
           gcloud compute scp --zone="$GCE_ZONE" --quiet \
             --strict-host-key-checking=no \
             "$INSTANCE_NAME":/workspace/results/execution_summary.md \
@@ -295,9 +403,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gpu-test-results
+          name: gpu-full-notebook-execution-results
           path: results/
-  
+
       - name: Delete GCE instance
         if: always()
         run: |
@@ -308,7 +416,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: always()
-    needs: [unit-tests, notebook-imports, notebook-smoke, notebook-execution, gpu-tests]
+    needs: [cpu-unit-tests, cpu-notebook-import-checks, cpu-smoke-tests, cpu-full-notebook-execution, gpu-notebook-import-checks, gpu-full-notebook-execution]
 
     steps:
       - name: Checkout
@@ -357,8 +465,16 @@ jobs:
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             cat all-results/gpu-test-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            cat all-results/gpu-test-results/execution_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          else
+            echo "GPU tests not enabled for this run." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # GPU execution results.
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## GPU Notebook Execution Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -d "all-results/gpu-full-notebook-execution-results" ]; then
+            cat all-results/gpu-full-notebook-execution-results/execution_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
           else
             echo "GPU tests not enabled for this run." >> "$GITHUB_STEP_SUMMARY"
           fi

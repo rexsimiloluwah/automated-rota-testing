@@ -133,11 +133,12 @@ flowchart LR
 
     subgraph Jobs
         direction TB
-        UT[unit-tests]
-        NI[notebook-imports]
-        NS[notebook-smoke]
-        NE[notebook-execution]
-        GT[gpu-tests]
+        UT[cpu-unit-tests]
+        NI[cpu-notebook-import-checks]
+        NS[cpu-smoke-tests]
+        NE[cpu-full-notebook-execution]
+        GI[gpu-notebook-import-checks]
+        GE[gpu-full-notebook-execution]
     end
 
     subgraph Report
@@ -159,11 +160,12 @@ flowchart LR
 
 | Job | Trigger | What |
 |-----|---------|------|
-| `unit-tests` | push/PR, nightly, manual | pytest |
-| `notebook-imports` | push/PR, nightly, manual | Import checks (CPU notebooks) |
-| `notebook-smoke` | push/PR, nightly, manual | Combined pytest + import checks |
-| `notebook-execution` | nightly, manual | CPU notebooks end-to-end |
-| `gpu-tests` | push/PR, nightly, manual | Full GPU testing on GCE T4 |
+| `cpu-unit-tests` | push/PR, nightly, manual | pytest |
+| `cpu-notebook-import-checks` | push/PR, nightly, manual | Import checks (CPU notebooks) |
+| `cpu-smoke-tests` | push/PR, nightly, manual | Combined pytest + import checks |
+| `cpu-full-notebook-execution` | nightly, manual | CPU notebooks end-to-end |
+| `gpu-notebook-import-checks` | push/PR, nightly, manual | Import checks on GCE T4 |
+| `gpu-full-notebook-execution` | nightly, manual | Full notebook execution on GCE T4 |
 | `report` | always | Aggregate results to GitHub Summary + Google Sheets |
 
 ## Quick Start
