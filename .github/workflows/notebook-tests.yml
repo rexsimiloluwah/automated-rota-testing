@@ -505,5 +505,8 @@ jobs:
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
     env:
-      # Set to 'true' when WIF and Drive folder are configured.
-      WRITE_SHEETS: 'true'
+      # Only write to Google Sheets when the required GCP credentials
+      # are configured. In forks without ``GCP_SERVICE_ACCOUNT`` the
+      # report job would otherwise fail at the ``google-github-actions/auth``
+      # step and report the entire workflow red even when every test passed.
+      WRITE_SHEETS: ${{ secrets.GCP_SERVICE_ACCOUNT != '' && 'true' || 'false' }}
