@@ -17,6 +17,12 @@ permissions:
 env:
   COLAB_GPU_IMAGE: us-docker.pkg.dev/colab-images/public/runtime
   GCE_ZONE: us-central1-a
+  # GCE network / subnet for GPU instances. Repository variables
+  # ``GCE_NETWORK`` / ``GCE_SUBNET`` override these. Set them if your
+  # project uses a custom VPC; otherwise fall back to the ``default`` VPC
+  # that every GCP project has out of the box.
+  GCE_NETWORK: ${{ vars.GCE_NETWORK || 'default' }}
+  GCE_SUBNET: ${{ vars.GCE_SUBNET || 'default' }}
 
 jobs:
   cpu-unit-tests:
@@ -198,8 +204,8 @@ jobs:
             --image-project=deeplearning-platform-release \
             --boot-disk-size=100GB \
             --boot-disk-type=pd-ssd \
-            --network=similoluwa-vpc \
-            --subnet=similoluwa-vpc \
+            --network="$GCE_NETWORK" \
+            --subnet="$GCE_SUBNET" \
             --metadata-from-file=startup-script=scripts/gce_startup.sh \
             --metadata=install-nvidia-driver=True \
             --scopes=cloud-platform \
@@ -327,8 +333,8 @@ jobs:
             --image-project=deeplearning-platform-release \
             --boot-disk-size=100GB \
             --boot-disk-type=pd-ssd \
-            --network=similoluwa-vpc \
-            --subnet=similoluwa-vpc \
+            --network="$GCE_NETWORK" \
+            --subnet="$GCE_SUBNET" \
             --metadata-from-file=startup-script=scripts/gce_startup.sh \
             --metadata=install-nvidia-driver=True \
             --scopes=cloud-platform \

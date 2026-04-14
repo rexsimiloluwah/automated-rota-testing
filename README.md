@@ -297,6 +297,17 @@ gcloud iam service-accounts add-iam-policy-binding \
 | `GCP_SERVICE_ACCOUNT` | `notebook-ci-runner@<PROJECT_ID>.iam.gserviceaccount.com` |
 | `GOOGLE_SPREADSHEET_ID` | The spreadsheet ID from the Google Sheets URL |
 
+### 4b. (Optional) Override the GCE network
+
+By default the GPU workflow creates ephemeral instances inside the `default` VPC that every GCP project has out of the box. If your project uses a custom VPC, set these **repository variables** (Settings → Secrets and variables → Actions → Variables):
+
+| Variable | Example | When to set |
+|----------|---------|-------------|
+| `GCE_NETWORK` | `my-custom-vpc` | Project uses a non-default VPC |
+| `GCE_SUBNET`  | `my-custom-vpc` | Subnet name (often matches the VPC name) |
+
+If either variable is unset the workflow falls back to `default`.
+
 ### 5. Enable required APIs
 
 ```bash
