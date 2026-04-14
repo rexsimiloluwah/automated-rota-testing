@@ -24,6 +24,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from inject_solutions import (
     _collect_solution_cells,
+    _extract_function_name,
     _find_solutions_boundary,
 )
 from check_notebook import _is_placeholder_cell
@@ -32,7 +33,55 @@ from check_notebook import _is_placeholder_cell
 _REPO_DIR = Path(__file__).resolve().parent.parent / "ai-foundations"
 
 
-def _extract_solutions(notebook_name: str) -> dict[str, object]:
+class _SolutionNamespace:
+    """Wrapper around a notebook's extracted solution namespace.
+
+    Behaves like a read-only dict for tests, but when a key is missing
+    it reports the exception that was raised while executing that
+    solution cell, instead of the uninformative ``KeyError`` you get
+    from a plain dict.
+
+    The underlying ``dict`` is what ``exec`` wrote into — it is kept
+    separate from this wrapper because CPython bypasses ``__getitem__``
+    on dict subclasses during ``exec`` globals lookups, so we cannot
+    subclass ``dict`` safely.
+    """
+
+    def __init__(
+        self,
+        namespace: dict[str, object],
+        load_errors: dict[str, Exception],
+    ) -> None:
+        self._ns = namespace
+        self._load_errors = load_errors
+
+    def __getitem__(self, key: str) -> object:
+        if key in self._ns:
+            return self._ns[key]
+        exc = self._load_errors.get(key)
+        if exc is not None:
+            raise RuntimeError(
+                f"Solution {key!r} failed to load at extraction time: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        raise KeyError(key)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._ns
+
+    def get(self, key: str, default: object = None) -> object:
+        try:
+            return self[key]
+        except (KeyError, RuntimeError):
+            return default
+
+    @property
+    def load_errors(self) -> dict[str, Exception]:
+        """Expose captured errors for diagnostic use."""
+        return dict(self._load_errors)
+
+
+def _extract_solutions(notebook_name: str) -> _SolutionNamespace:
     """Extract and compile all solutions from a notebook.
 
     First executes non-placeholder code cells from the main body of the
@@ -40,12 +89,21 @@ def _extract_solutions(notebook_name: str) -> dict[str, object]:
     solution cells from the ``## Solutions`` section.  Everything runs in
     a shared namespace so interdependent functions work.
 
+    Body-cell exec failures are expected (they often need runtime
+    context like data downloads or Colab APIs) and are discarded.
+    Solution-cell exec failures are **not** expected — if a solution
+    fails to compile or throws at definition time, the broken state is
+    captured into ``load_errors`` keyed by function name. Tests that
+    later try to access the solution get a ``RuntimeError`` that names
+    the original exception, instead of an opaque ``KeyError`` that
+    tells you nothing about the root cause.
+
     Args:
         notebook_name: Filename relative to the repo course directory,
             e.g. ``"course_1/gdm_lab_1_2_experiment_with_n_gram_models.ipynb"``.
 
     Returns:
-        Namespace dict containing all compiled solution objects.
+        ``_SolutionNamespace`` wrapping all compiled solution objects.
     """
     nb_path = _REPO_DIR / notebook_name
     if not nb_path.exists():
@@ -76,7 +134,8 @@ def _extract_solutions(notebook_name: str) -> dict[str, object]:
 
     # Step 1: Execute non-placeholder code cells from the notebook body.
     # This picks up helper functions, constants, and imports that
-    # solutions may depend on.
+    # solutions may depend on. Body cells are allowed to fail (runtime
+    # context is often missing), so we discard those exceptions.
     for cell in cells[:boundary]:
         if cell.get("cell_type") != "code":
             continue
@@ -98,14 +157,22 @@ def _extract_solutions(notebook_name: str) -> dict[str, object]:
             pass
 
     # Step 2: Execute solution cells, overriding any placeholder stubs.
+    # Solution-cell failures are real bugs, not expected — capture them
+    # so tests can surface the original exception.
+    load_errors: dict[str, Exception] = {}
     solutions = _collect_solution_cells(cells, boundary)
     for sol in solutions:
         try:
             exec(sol["source"], namespace)
-        except Exception:
-            pass
+        except Exception as exc:
+            key = (
+                sol.get("function_name")
+                or _extract_function_name(sol["source"])
+                or f"<activity_{sol.get('activity_number', '?')}>"
+            )
+            load_errors[key] = exc
 
-    return namespace
+    return _SolutionNamespace(namespace, load_errors)
 
 
 # ---------------------------------------------------------------------------
