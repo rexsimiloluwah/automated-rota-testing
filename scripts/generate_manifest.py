@@ -136,7 +136,10 @@ def generate_manifest(
 
     manifest = []
     for nb_path in notebooks:
-        relative_path = str(nb_path.relative_to(repo_dir))
+        # ``notebook_overrides.yml`` uses POSIX-style keys ("course_5/...").
+        # On Windows, ``str(Path)`` returns backslashes, which would silently
+        # miss every override. Always emit forward slashes.
+        relative_path = nb_path.relative_to(repo_dir).as_posix()
         course = _extract_course(nb_path, repo_dir)
         gpu_required = _detect_gpu(nb_path)
 
