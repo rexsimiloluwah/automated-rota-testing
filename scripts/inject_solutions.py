@@ -14,10 +14,34 @@ If ``--output`` is omitted the notebook is modified in-place.
 """
 
 import argparse
+import ast
 import json
 import re
 import sys
 from pathlib import Path
+
+
+def _is_trailing_empty_list_assignment(source: str) -> bool:
+    """Return True only when ``x = []`` is the cell's last statement.
+
+    A bare ``x = []`` followed by nothing is the placeholder convention
+    used by some "fill in the list" activities. The same syntax followed
+    by a loop that populates the list (``x = []; for ... : x.append(...)``)
+    is an accumulator pattern, not a placeholder, and must not be matched
+    as one — doing so causes ``inject_solutions`` to splice a function
+    definition into a data-loading cell and destroy the dataset load.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    if not tree.body:
+        return False
+    last = tree.body[-1]
+    if not isinstance(last, ast.Assign):
+        return False
+    value = last.value
+    return isinstance(value, ast.List) and len(value.elts) == 0
 
 
 def _find_solutions_boundary(cells: list[dict]) -> int | None:
@@ -340,7 +364,7 @@ def _find_activity_cells(
             or re.search(r"#\s*Change code here", source, re.IGNORECASE)
             or re.search(r"(?<![!=<>])=\s*$", source, re.MULTILINE)
             or re.search(r"(?<![!=<>])=\s*#", source)
-            or re.search(r"(?<![!=<>])=\s*\[\]", source)
+            or _is_trailing_empty_list_assignment(source)
             or source.strip() == "..."
         )
         if not is_placeholder:
