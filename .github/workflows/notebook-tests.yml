@@ -194,7 +194,7 @@ jobs:
             --machine-type=n1-standard-4 \
             --accelerator=type=nvidia-tesla-t4,count=1 \
             --maintenance-policy=TERMINATE \
-            --image-family=pytorch-2-7-cu128-ubuntu-2204-nvidia-570 \
+            --image-family=pytorch-2-9-cu129-ubuntu-2204-nvidia-580 \
             --image-project=deeplearning-platform-release \
             --boot-disk-size=100GB \
             --boot-disk-type=pd-ssd \
@@ -323,7 +323,7 @@ jobs:
             --machine-type=n1-standard-4 \
             --accelerator=type=nvidia-tesla-t4,count=1 \
             --maintenance-policy=TERMINATE \
-            --image-family=pytorch-2-7-cu128-ubuntu-2204-nvidia-570 \
+            --image-family=pytorch-2-9-cu129-ubuntu-2204-nvidia-580 \
             --image-project=deeplearning-platform-release \
             --boot-disk-size=100GB \
             --boot-disk-type=pd-ssd \
