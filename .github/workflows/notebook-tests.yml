@@ -169,7 +169,7 @@ jobs:
   # GPU: pytest + syntax/import checks on GCE T4. Runs on every push/PR.
   gpu-notebook-import-checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
 
     steps:
       - name: Checkout
@@ -221,7 +221,7 @@ jobs:
 
       - name: Wait for startup script
         run: |
-          for i in $(seq 1 45); do
+          for i in $(seq 1 90); do
             if gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
               --ssh-flag="-o StrictHostKeyChecking=no" \
               --ssh-flag="-o ConnectTimeout=10" \
@@ -231,7 +231,7 @@ jobs:
             fi
             echo "Waiting for startup... ($((i * 20))s)"; sleep 20
           done
-          echo "Error: startup did not complete within 900s."; exit 1
+          echo "Error: startup did not complete within 1800s."; exit 1
 
       - name: Copy project files
         run: |
@@ -350,7 +350,7 @@ jobs:
 
       - name: Wait for startup script
         run: |
-          for i in $(seq 1 45); do
+          for i in $(seq 1 90); do
             if gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
               --ssh-flag="-o StrictHostKeyChecking=no" \
               --ssh-flag="-o ConnectTimeout=10" \
@@ -360,7 +360,7 @@ jobs:
             fi
             echo "Waiting for startup... ($((i * 20))s)"; sleep 20
           done
-          echo "Error: startup did not complete within 900s."; exit 1
+          echo "Error: startup did not complete within 1800s."; exit 1
 
       - name: Copy project files
         run: |

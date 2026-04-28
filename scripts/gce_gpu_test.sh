@@ -168,7 +168,7 @@ fi
 echo "==> Waiting for startup script to finish..."
 echo "    (NVIDIA drivers + Colab image pull, typically 5-10 minutes)"
 
-MAX_WAIT=900
+MAX_WAIT=1800
 ELAPSED=0
 INTERVAL=20
 
