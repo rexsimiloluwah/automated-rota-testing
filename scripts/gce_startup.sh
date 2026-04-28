@@ -23,6 +23,27 @@ trap 'chmod -R a+rwX /workspace 2>/dev/null; touch /workspace/.ready' EXIT
 
 echo "==> [startup] $(date): Starting..."
 
+# Wait for the dpkg/apt lock. The deeplearning-platform image runs
+# unattended-upgrades and apt-daily during early boot, which holds
+# /var/lib/dpkg/lock-frontend and causes our apt-get to fail.
+wait_for_apt_lock() {
+    local waited=0
+    local max_wait=600
+    while fuser /var/lib/dpkg/lock-frontend > /dev/null 2>&1 \
+            || fuser /var/lib/apt/lists/lock > /dev/null 2>&1 \
+            || fuser /var/lib/dpkg/lock > /dev/null 2>&1; do
+        if [ $waited -ge $max_wait ]; then
+            echo "==> [startup] WARNING: apt lock held after ${max_wait}s, proceeding anyway."
+            return
+        fi
+        sleep 5
+        waited=$((waited + 5))
+        if [ $((waited % 30)) -eq 0 ]; then
+            echo "    Waiting for apt lock... (${waited}s)"
+        fi
+    done
+}
+
 # Wait for NVIDIA drivers. The deeplearning-platform image installs
 # them on first boot, which can take several minutes.
 echo "==> [startup] Waiting for NVIDIA drivers..."
@@ -50,23 +71,68 @@ fi
 # Install Docker + NVIDIA Container Toolkit if not already present.
 echo "==> [startup] Checking Docker..."
 if ! command -v docker > /dev/null 2>&1; then
-    echo "==> [startup] Installing docker.io and nvidia-container-toolkit..."
-    apt-get update -qq
-    apt-get install -y -qq docker.io nvidia-container-toolkit
+    echo "==> [startup] Docker not found. Waiting for apt lock..."
+    wait_for_apt_lock
+
+    echo "==> [startup] Running apt-get update..."
+    if ! apt-get update; then
+        echo "==> [startup] apt-get update failed. Retrying once more..."
+        sleep 10
+        wait_for_apt_lock
+        apt-get update || echo "==> [startup] WARNING: apt-get update failed twice."
+    fi
+
+    echo "==> [startup] Installing docker.io..."
+    if ! apt-get install -y docker.io; then
+        echo "==> [startup] ERROR: docker.io install failed."
+        exit 1
+    fi
+
+    echo "==> [startup] Adding NVIDIA Container Toolkit repo..."
+    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+        | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+        | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+        > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+    echo "==> [startup] Installing nvidia-container-toolkit..."
+    apt-get update
+    if ! apt-get install -y nvidia-container-toolkit; then
+        echo "==> [startup] WARNING: nvidia-container-toolkit install failed."
+    fi
+
     if command -v nvidia-ctk > /dev/null 2>&1; then
         nvidia-ctk runtime configure --runtime=docker
     fi
+
     systemctl enable --now docker
     systemctl restart docker
+    sleep 3
 fi
 
 if ! command -v docker > /dev/null 2>&1; then
-    echo "==> [startup] ERROR: Docker install failed."
+    echo "==> [startup] ERROR: Docker still not found after install attempt."
     exit 1
 fi
 
 echo "==> [startup] Docker version: $(docker --version)"
-echo "==> [startup] Docker info:"
-docker info 2>&1 | head -20 || true
+
+# Verify the daemon is actually up so the test step doesn't fail with
+# 'Cannot connect to the Docker daemon'.
+echo "==> [startup] Verifying Docker daemon..."
+DAEMON_WAIT=0
+while [ $DAEMON_WAIT -lt 60 ]; do
+    if docker info > /dev/null 2>&1; then
+        echo "==> [startup] Docker daemon is up."
+        break
+    fi
+    sleep 5
+    DAEMON_WAIT=$((DAEMON_WAIT + 5))
+done
+
+if [ $DAEMON_WAIT -ge 60 ]; then
+    echo "==> [startup] WARNING: Docker daemon not responding."
+    docker info 2>&1 | head -5 || true
+fi
 
 echo "==> [startup] $(date): Done."
