@@ -13,12 +13,13 @@
 export DEBIAN_FRONTEND=noninteractive
 
 mkdir -p /workspace
+chmod 777 /workspace
 LOG="/workspace/startup.log"
 exec > >(tee -a "$LOG") 2>&1
 
-# Always mark ready on exit so the workflow stops waiting, even on
-# partial failure. Diagnostics are in the log.
-trap 'touch /workspace/.ready' EXIT
+# Always mark ready on exit and ensure /workspace is writable, so the
+# workflow's SCP step works even if the script exits early.
+trap 'chmod -R a+rwX /workspace 2>/dev/null; touch /workspace/.ready' EXIT
 
 echo "==> [startup] $(date): Starting..."
 
@@ -83,9 +84,5 @@ if ! command -v docker > /dev/null 2>&1; then
 fi
 
 echo "==> [startup] Docker version: $(docker --version)"
-
-# Set permissions on /workspace so the test step can write results.
-echo "==> [startup] Setting permissions on /workspace..."
-chmod -R a+rwX /workspace || true
 
 echo "==> [startup] $(date): Done."
