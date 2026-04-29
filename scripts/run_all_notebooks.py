@@ -53,7 +53,6 @@ def _write_summary(
         skipped: Count of skipped notebooks.
     """
     lines = []
-    lines.append("## Notebook Execution Results\n")
 
     if failed == 0:
         lines.append(

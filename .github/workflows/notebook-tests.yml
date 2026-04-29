@@ -457,35 +457,42 @@ jobs:
 
       - name: Write GitHub summary
         run: |
-          # Unit test pytest output.
-          echo "## Unit Test Results" >> "$GITHUB_STEP_SUMMARY"
+          # CPU Unit Test Results
+          echo "## CPU Unit Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           cat all-results/unit-test-results/pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No output." >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          # Notebook import check results.
-          cat all-results/notebook-import-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          # CPU Notebook Import Checks
+          echo "## CPU Notebook Import Checks" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat all-results/notebook-import-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No output." >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          # Smoke test results.
-          echo "## Smoke Test Results" >> "$GITHUB_STEP_SUMMARY"
+          # CPU Smoke Tests
+          echo "## CPU Smoke Tests" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           cat all-results/notebook-smoke-results/pytest_output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No output." >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           cat all-results/notebook-smoke-results/notebook_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          # Notebook execution results.
+          # CPU Full Notebook Execution
+          echo "## CPU Full Notebook Execution" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ -d "all-results/notebook-execution-results" ]; then
-            cat all-results/notebook-execution-results/execution_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat all-results/notebook-execution-results/execution_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No output." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Not run for this trigger (nightly and manual dispatch only)." >> "$GITHUB_STEP_SUMMARY"
           fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          # GPU test results.
-          echo "## GPU Test Results" >> "$GITHUB_STEP_SUMMARY"
+          # GPU Notebook Import Checks
+          echo "## GPU Notebook Import Checks" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ -d "all-results/gpu-test-results" ]; then
             echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -496,15 +503,15 @@ jobs:
           else
             echo "GPU tests not enabled for this run." >> "$GITHUB_STEP_SUMMARY"
           fi
-
-          # GPU execution results.
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## GPU Notebook Execution Results" >> "$GITHUB_STEP_SUMMARY"
+
+          # GPU Full Notebook Execution
+          echo "## GPU Full Notebook Execution" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ -d "all-results/gpu-full-notebook-execution-results" ]; then
-            cat all-results/gpu-full-notebook-execution-results/execution_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+            cat all-results/gpu-full-notebook-execution-results/execution_summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No output." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "GPU tests not enabled for this run." >> "$GITHUB_STEP_SUMMARY"
+            echo "Not run for this trigger (nightly and manual dispatch only)." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Set up Python
