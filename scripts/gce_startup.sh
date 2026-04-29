@@ -75,38 +75,39 @@ if ! command -v docker > /dev/null 2>&1; then
     wait_for_apt_lock
 
     echo "==> [startup] Running apt-get update..."
-    if ! apt-get update; then
-        echo "==> [startup] apt-get update failed. Retrying once more..."
+    if ! timeout 300 apt-get update; then
+        echo "==> [startup] apt-get update failed/timed out. Retrying once..."
         sleep 10
         wait_for_apt_lock
-        apt-get update || echo "==> [startup] WARNING: apt-get update failed twice."
+        timeout 300 apt-get update \
+            || echo "==> [startup] WARNING: apt-get update failed twice."
     fi
 
     echo "==> [startup] Installing docker.io..."
-    if ! apt-get install -y docker.io; then
-        echo "==> [startup] ERROR: docker.io install failed."
+    if ! timeout 600 apt-get install -y docker.io; then
+        echo "==> [startup] ERROR: docker.io install failed/timed out."
         exit 1
     fi
 
     echo "==> [startup] Adding NVIDIA Container Toolkit repo..."
-    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+    timeout 60 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
         | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    timeout 60 curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
         | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
         > /etc/apt/sources.list.d/nvidia-container-toolkit.list
 
     echo "==> [startup] Installing nvidia-container-toolkit..."
-    apt-get update
-    if ! apt-get install -y nvidia-container-toolkit; then
-        echo "==> [startup] WARNING: nvidia-container-toolkit install failed."
+    timeout 300 apt-get update || true
+    if ! timeout 600 apt-get install -y nvidia-container-toolkit; then
+        echo "==> [startup] WARNING: nvidia-container-toolkit install failed/timed out."
     fi
 
     if command -v nvidia-ctk > /dev/null 2>&1; then
-        nvidia-ctk runtime configure --runtime=docker
+        timeout 60 nvidia-ctk runtime configure --runtime=docker || true
     fi
 
-    systemctl enable --now docker
-    systemctl restart docker
+    timeout 60 systemctl enable --now docker || true
+    timeout 60 systemctl restart docker || true
     sleep 3
 fi
 

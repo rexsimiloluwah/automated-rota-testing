@@ -74,9 +74,25 @@ jobs:
               2>/dev/null | grep -q "READY"; then
               echo "Instance is ready."; exit 0
             fi
-            echo "Waiting for startup... ($((i * 20))s)"; sleep 20
+            echo "Waiting for startup... ($((i * 20))s)"
+            if [ $((i % 9)) -eq 0 ]; then
+              echo "--- last lines of /workspace/startup.log ---"
+              gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+                --ssh-flag="-o StrictHostKeyChecking=no" \
+                --ssh-flag="-o ConnectTimeout=10" \
+                --command="tail -10 /workspace/startup.log 2>/dev/null || echo '(no log yet)'" \
+                2>/dev/null || true
+              echo "--------------------------------------------"
+            fi
+            sleep 20
           done
-          echo "Error: startup did not complete within 1800s."; exit 1
+          echo "Error: startup did not complete within 1800s."
+          echo "--- final /workspace/startup.log ---"
+          gcloud compute ssh "$INSTANCE_NAME" --zone="$GCE_ZONE" --quiet \
+            --ssh-flag="-o StrictHostKeyChecking=no" \
+            --command="tail -50 /workspace/startup.log 2>/dev/null || echo '(no log)'" \
+            2>/dev/null || true
+          exit 1
 
       - name: Copy project files
         run: |
