@@ -97,8 +97,10 @@ def _extract_activity_number(source: str) -> int | None:
     return None
 
 
-def _extract_function_span(source: str) -> tuple[int, int] | None:
-    """Find the start and end line indices of the first function definition.
+def _extract_function_span(
+    source: str, target_name: str | None = None
+) -> tuple[int, int] | None:
+    """Find the start and end line indices of a function definition.
 
     Detects the function by the ``def`` keyword and determines where it
     ends by looking for the next line at the same or lower indentation
@@ -106,10 +108,15 @@ def _extract_function_span(source: str) -> tuple[int, int] | None:
 
     Args:
         source: The joined source code.
+        target_name: Optional function name to target. When given, only a
+            matching ``def <target_name>(`` is considered; earlier ``def``s
+            with other names are skipped. When ``None`` (default), the
+            first ``def`` wins — this preserves legacy behaviour for
+            single-function cells.
 
     Returns:
         A (start, end) tuple of line indices (0-based, end exclusive),
-        or None if no function is found.
+        or None if no matching function is found.
     """
     lines = source.splitlines(keepends=True)
     func_start = None
@@ -119,9 +126,13 @@ def _extract_function_span(source: str) -> tuple[int, int] | None:
     for i, line in enumerate(lines):
         stripped = line.rstrip()
 
-        # Find the def line.
+        # Find the def line (optionally matching a specific function name).
         if func_start is None:
-            match = re.match(r"^(\s*)def\s+\w+\s*\(", line)
+            if target_name is not None:
+                pattern = rf"^(\s*)def\s+{re.escape(target_name)}\s*\("
+            else:
+                pattern = r"^(\s*)def\s+\w+\s*\("
+            match = re.match(pattern, line)
             if match:
                 func_start = i
                 func_indent = len(match.group(1))
@@ -200,10 +211,20 @@ def _replace_placeholder_region(
     Returns:
         The modified cell source.
     """
-    placeholder_patterns = [
+    # Explicit comment markers — the author has written "your code goes
+    # here" or similar. These unambiguously identify the placeholder.
+    comment_patterns = [
         re.compile(r"#\s*Add your code", re.IGNORECASE),
         re.compile(r"#\s*Your code here", re.IGNORECASE),
         re.compile(r"#\s*Change code here", re.IGNORECASE),
+    ]
+    # Equality-form markers — bare assignments to ellipsis or empty
+    # list/str/etc. Ambiguous: ``tokens = []`` can be either a
+    # placeholder or an initialization that the student will fill into
+    # with a subsequent loop. Only use these when no comment marker is
+    # present, so that ``= []`` initialisations are preserved when the
+    # cell has an explicit "Add your code here" comment further down.
+    equality_patterns = [
         re.compile(r"(?<![!=<>])=\s*\.\.\."),
         re.compile(r"(?<![!=<>])=\s*\[\]"),
         re.compile(r"(?<![!=<>])=\s*$"),
@@ -213,13 +234,28 @@ def _replace_placeholder_region(
     lines = cell_source.splitlines(keepends=True)
     placeholder_start = None
 
+    # First pass: explicit comment markers take priority.
     for i, line in enumerate(lines):
-        for pattern in placeholder_patterns:
+        for pattern in comment_patterns:
             if pattern.search(line):
                 placeholder_start = i
                 break
         if placeholder_start is not None:
             break
+
+    # Fallback: equality markers, only if no comment marker was found.
+    if placeholder_start is None:
+        for i, line in enumerate(lines):
+            for pattern in equality_patterns:
+                if pattern.search(line):
+                    placeholder_start = i
+                    break
+            if placeholder_start is not None:
+                break
+
+    # All patterns (used below to identify continuation of the placeholder
+    # region — blank lines and successive placeholder lines are swallowed).
+    placeholder_patterns = comment_patterns + equality_patterns
 
     if placeholder_start is None:
         # No marker found — fall back to full replacement.
@@ -258,7 +294,7 @@ def _replace_placeholder_region(
 
 
 def _replace_function_in_cell(
-    cell_source: str, solution_func: str
+    cell_source: str, solution_func: str, target_name: str | None = None
 ) -> str:
     """Replace a function definition in a cell with the solution version.
 
@@ -267,11 +303,22 @@ def _replace_function_in_cell(
     Args:
         cell_source: The original cell source code.
         solution_func: The solution function source code.
+        target_name: Optional name of the function to replace. When the
+            activity cell defines multiple functions (e.g. a class body
+            with ``__init__`` and ``call``) and the solution only fills
+            in one of them, callers should pass the solution's function
+            name here so the correct span is replaced.
 
     Returns:
         The modified cell source with the function replaced.
     """
-    span = _extract_function_span(cell_source)
+    span = _extract_function_span(cell_source, target_name=target_name)
+    # Fall back to the first function if the target was not found — this
+    # preserves behaviour for single-function activity cells where the
+    # activity's ``def`` has a different name from the solution (rare,
+    # but possible when a student stub uses a placeholder name).
+    if span is None and target_name is not None:
+        span = _extract_function_span(cell_source)
     if span is None:
         return cell_source
 
@@ -364,6 +411,9 @@ def _find_activity_cells(
             or re.search(r"#\s*Change code here", source, re.IGNORECASE)
             or re.search(r"(?<![!=<>])=\s*$", source, re.MULTILINE)
             or re.search(r"(?<![!=<>])=\s*#", source)
+            or re.search(
+                r"#\s*Fill in\b[^\n]*\.\.\.", source, re.IGNORECASE
+            )
             or _is_trailing_empty_list_assignment(source)
             or source.strip() == "..."
         )
@@ -396,6 +446,39 @@ def _source_to_lines(source: str) -> list[str]:
         return []
     lines = source.splitlines(keepends=True)
     return lines
+
+
+def _is_magic_cell(source: str) -> bool:
+    """Return True if the cell contains IPython line or cell magic.
+
+    Cells starting (after stripping leading whitespace on any line) with
+    ``!`` (shell) or ``%`` (magic) are not valid Python and will fail
+    ``ast.parse`` even when the injection is correct. They are exempted
+    from the post-injection syntax check.
+    """
+    for line in source.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("!") or stripped.startswith("%"):
+            return True
+    return False
+
+
+def _parses_as_python(source: str) -> bool:
+    """Return True if ``source`` is valid Python, or a magic cell.
+
+    Magic cells are considered valid because they are interpreted by
+    IPython, not the Python compiler; running ``ast.parse`` on them
+    would produce false negatives.
+    """
+    if not source.strip():
+        return True
+    if _is_magic_cell(source):
+        return True
+    try:
+        ast.parse(source)
+        return True
+    except SyntaxError:
+        return False
 
 
 def inject_solutions(notebook_path: Path) -> dict:
@@ -463,21 +546,41 @@ def inject_solutions(notebook_path: Path) -> dict:
 
         # If both the activity and solution have a function, replace
         # only the function definition within the cell.
+        new_source = None
         if func_name and _extract_function_name(solution_source):
             solution_func = _extract_solution_function(solution_source)
             if solution_func:
+                # Target the solution's function name so that, in cells
+                # with multiple defs (e.g. a class with ``__init__`` and
+                # ``call``), we replace the function the solution is for
+                # rather than whichever def appears first.
+                solution_func_name = _extract_function_name(solution_func)
                 new_source = _replace_function_in_cell(
-                    cell_source, solution_func
+                    cell_source,
+                    solution_func,
+                    target_name=solution_func_name,
                 )
-                cells[idx]["source"] = _source_to_lines(new_source)
-                replacements += 1
-                continue
 
-        # For non-function activities, try to preserve surrounding code
-        # by replacing only the placeholder region.
-        new_source = _replace_placeholder_region(
-            cell_source, solution_source
-        )
+        # For non-function activities (or when the function-replacement
+        # path did not produce new source), try to preserve surrounding
+        # code by replacing only the placeholder region.
+        if new_source is None:
+            new_source = _replace_placeholder_region(
+                cell_source, solution_source
+            )
+
+        # Defence in depth: if the original cell was valid Python but
+        # the injected cell is not, the injection mangled something.
+        # Skip the replacement and keep the original rather than ship a
+        # broken notebook. Magic cells (``!pip``, ``%%writefile``) are
+        # exempted because they aren't valid Python even when correct.
+        if _parses_as_python(cell_source) and not _parses_as_python(new_source):
+            print(
+                f"  {notebook_path.name}: skipped cell {idx} — injection "
+                f"would produce invalid Python, original preserved"
+            )
+            continue
+
         cells[idx]["source"] = _source_to_lines(new_source)
         replacements += 1
 
